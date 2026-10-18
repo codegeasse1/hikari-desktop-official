@@ -11,6 +11,8 @@ import com.lagradost.cloudstream3.metaproviders.TraktProvider
 import com.hikari.common.logging.AppLogger
 import com.hikari.common.platform.PlatformPaths
 import com.hikari.runtime.loader.ExtensionLoader
+import com.hikari.sources.aniyomi.AniyomiMainApi
+import com.hikari.sources.aniyomi.AniyomiManager
 import com.hikari.sources.hiki.HikiMainApi
 import com.hikari.sources.nuvio.NuvioMainApi
 import com.hikari.sources.sky.SkyStreamMainApi
@@ -75,6 +77,12 @@ fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
         runCatching {
             for (d in SkyStreamManager.installedPlugins()) {
                 out.add(SkyStreamMainApi(d))
+            }
+        }
+        runCatching {
+            for (f in AniyomiManager.installedExts()) {
+                val n = AniyomiManager.sourceCountFor(f)
+                for (i in 0 until n) out.add(AniyomiMainApi(f, i))
             }
         }
     }

@@ -16,6 +16,7 @@ object PreferenceKeys {
     const val PREF_HIKI_ENABLED = "hikari_hiki_enabled"
     const val PREF_NUVIO_REPOS = "hikari_nuvio_repo_urls"
     const val PREF_SKY_REPOS = "hikari_sky_repo_urls"
+    const val PREF_ANIYOMI_REPOS = "hikari_aniyomi_repo_urls"
     const val PREF_IPTV_PLAYLIST_URL = "hikari_iptv_playlist_url"
     const val PREF_STREMIO_ADDON_URLS = "hikari_stremio_addon_urls"
 
