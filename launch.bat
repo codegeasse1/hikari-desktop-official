@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
-:: ── CLI Argument Dispatch ───────────────────────────────────────
+:: ââ CLI Argument Dispatch âââââââââââââââââââââââââââââââââââââââ
 if /i "%~1"=="dev" goto :run_dev
 if /i "%~1"=="release" goto :run_release
 if /i "%~1"=="build" goto :run_build
@@ -15,10 +15,10 @@ if /i "%~1"=="start" goto :run_normal
 :menu
 cls
 echo ===================================================
-echo           CloudStream Desktop Launcher
+echo           Hikari Desktop Launcher
 echo ===================================================
 echo.
-echo   [1] Start CloudStream (Default Dev Mode)
+echo   [1] Start Hikari (Default Dev Mode)
 echo   [2] Start with Dev Studio ^& Live LogCat (--dev)
 echo   [3] Launch Packaged Release EXE
 echo   [4] Build / Compile Standalone EXE
@@ -43,7 +43,7 @@ echo Invalid selection. Please try again.
 timeout /t 2 >nul
 goto :menu
 
-:: ── Shared Pre-Flight Verification ─────────────────────────────
+:: ââ Shared Pre-Flight Verification âââââââââââââââââââââââââââââ
 :check_prerequisites
 call :check_java
 if %errorlevel% neq 0 exit /b %errorlevel%
@@ -53,7 +53,7 @@ call :check_native_binaries
 if %errorlevel% neq 0 exit /b %errorlevel%
 exit /b 0
 
-:: ── Java Environment Verification ──────────────────────────────
+:: ââ Java Environment Verification ââââââââââââââââââââââââââââââ
 :check_java
 where java >nul 2>&1
 if %errorlevel% neq 0 (
@@ -62,7 +62,7 @@ if %errorlevel% neq 0 (
         echo ===================================================
         echo   [FATAL ERROR] Java is not installed or not in PATH
         echo ===================================================
-        echo   CloudStream Desktop requires JDK 21 or higher.
+        echo   Hikari Desktop requires JDK 21 or higher.
         echo   Please install Eclipse Adoptium Temurin 21:
         echo     https://adoptium.net/temurin/releases/?version=21
         echo   and ensure 'java' is in your PATH or JAVA_HOME is set.
@@ -74,7 +74,7 @@ if %errorlevel% neq 0 (
 )
 exit /b 0
 
-:: ── Shared Submodule Verification ─────────────────────────────
+:: ââ Shared Submodule Verification âââââââââââââââââââââââââââââ
 :check_submodules
 if not exist "android-reference\settings.gradle.kts" (
     echo [INFO] android-reference submodule is empty. Attempting to fetch automatically...
@@ -97,7 +97,7 @@ if not exist "android-reference\settings.gradle.kts" (
 )
 exit /b 0
 
-:: ── Shared Native Binaries Verification ───────────────────────
+:: ââ Shared Native Binaries Verification âââââââââââââââââââââââ
 :check_native_binaries
 set "MPV_DLL=desktop-app\appResources\windows\mpv\libmpv-2.dll"
 set "BRIDGE_DLL=desktop-app\appResources\windows\jni\player_bridge.dll"
@@ -144,32 +144,32 @@ exit /b 1
 :binaries_ok
 exit /b 0
 
-:: ── Option 1: Normal Launch ──────────────────────────────────
+:: ââ Option 1: Normal Launch ââââââââââââââââââââââââââââââââââ
 :run_normal
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo.
-echo [INFO] Starting CloudStream Desktop Client...
+echo [INFO] Starting Hikari Desktop Client...
 echo [TIP] Press F12 in-app anytime to open the Dev Studio LogCat.
 echo.
 call gradlew :desktop-app:run
 goto :after_run
 
-:: ── Option 2: Dev Studio Launch ──────────────────────────────
+:: ââ Option 2: Dev Studio Launch ââââââââââââââââââââââââââââââ
 :run_dev
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo.
-echo [INFO] Starting CloudStream Desktop with Dev Studio ^& Live LogCat...
+echo [INFO] Starting Hikari Desktop with Dev Studio ^& Live LogCat...
 echo.
 call gradlew :desktop-app:run --args="--dev"
 goto :after_run
 
-:: ── Option 3: Release EXE Launch ─────────────────────────────
+:: ââ Option 3: Release EXE Launch âââââââââââââââââââââââââââââ
 :run_release
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
-set "EXE_PATH=desktop-app\build\compose\binaries\main\app\CloudStream-Desktop\CloudStream-Desktop.exe"
+set "EXE_PATH=desktop-app\build\compose\binaries\main\app\Hikari-Desktop\Hikari-Desktop.exe"
 
 if not exist "%EXE_PATH%" (
     echo.
@@ -186,17 +186,17 @@ if not exist "%EXE_PATH%" (
 )
 
 echo.
-echo [INFO] Starting CloudStream-Desktop.exe...
+echo [INFO] Starting Hikari-Desktop.exe...
 start "" "%EXE_PATH%"
 exit /b 0
 
-:: ── Option 4: Build Release EXE ──────────────────────────────
+:: ââ Option 4: Build Release EXE ââââââââââââââââââââââââââââââ
 :run_build
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo.
 echo ===================================================
-echo   Compiling CloudStream Desktop (Standalone EXE)
+echo   Compiling Hikari Desktop (Standalone EXE)
 echo ===================================================
 echo.
 call gradlew clean :desktop-app:createDistributable
@@ -209,12 +209,12 @@ if %errorlevel% neq 0 (
 echo.
 echo [SUCCESS] Standalone EXE compilation complete!
 echo Executable located at:
-echo desktop-app\build\compose\binaries\main\app\CloudStream-Desktop\CloudStream-Desktop.exe
+echo desktop-app\build\compose\binaries\main\app\Hikari-Desktop\Hikari-Desktop.exe
 echo.
 pause
 exit /b 0
 
-:: ── Option 5: Run Tests ──────────────────────────────────────
+:: ââ Option 5: Run Tests ââââââââââââââââââââââââââââââââââââââ
 :run_test
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
@@ -233,12 +233,12 @@ echo.
 pause
 exit /b 0
 
-:: ── Option 6: Safe Mode Launch ────────────────────────────────
+:: ââ Option 6: Safe Mode Launch ââââââââââââââââââââââââââââââââ
 :run_safemode
 call :check_prerequisites
 if %errorlevel% neq 0 exit /b %errorlevel%
 echo.
-echo [INFO] Starting CloudStream Desktop in Safe Mode (plugins bypassed)...
+echo [INFO] Starting Hikari Desktop in Safe Mode (plugins bypassed)...
 echo.
 call gradlew :desktop-app:run --args="--safe-mode"
 goto :after_run
