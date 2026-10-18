@@ -17,6 +17,8 @@ import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.newTvSeriesLoadResponse
 import com.lagradost.cloudstream3.newTvSeriesSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
@@ -239,14 +241,15 @@ class StremioAddonApi(
                 }
                 val isM3u8 = sUrl.contains(".m3u8", true)
                 callback(
-                    ExtractorLink(
+                    newExtractorLink(
                         this@StremioAddonApi.name,
                         st.optString("name").ifBlank { if (isM3u8) "HLS" else "Direct" },
                         sUrl,
-                        "",
-                        Qualities.Unknown.value,
-                        isM3u8,
-                    )
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                    ) {
+                        referer = ""
+                        quality = Qualities.Unknown.value
+                    }
                 )
                 any = true
             }

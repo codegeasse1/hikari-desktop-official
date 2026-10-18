@@ -15,6 +15,8 @@ import com.lagradost.cloudstream3.newLiveSearchResponse
 import com.lagradost.cloudstream3.newLiveStreamLoadResponse
 import com.lagradost.cloudstream3.newSearchResponseList
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
@@ -122,14 +124,15 @@ class IptvMainApi(
         if (data.isBlank()) return false
         val isM3u8 = data.contains(".m3u8", ignoreCase = true)
         callback(
-            ExtractorLink(
+            newExtractorLink(
                 source = name,
                 name = "IPTV",
                 url = data,
-                referer = "",
-                quality = Qualities.Unknown.value,
-                isM3u8 = isM3u8,
-            )
+                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+            ) {
+                referer = ""
+                quality = Qualities.Unknown.value
+            }
         )
         return true
     }

@@ -13,7 +13,6 @@ import com.lagradost.common.platform.PlatformPaths
 import com.lagradost.runtime.loader.ExtensionLoader
 import com.hikari.sources.iptv.IptvMainApi
 import com.hikari.sources.stremio.StremioAddonApi
-import com.lagradost.cloudstream3.desktop.core.preference.PreferenceKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
