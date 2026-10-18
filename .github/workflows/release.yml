@@ -141,7 +141,14 @@ jobs:
         if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
         $signArgs += $file
         & $signtool.FullName @signArgs
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($LASTEXITCODE -ne 0) {
+          if ($signArgs -contains "/p") {
+            Write-Host "Sign with password failed - retrying without /p (PFX may have no password)"
+            $signArgs = $signArgs[0..($signArgs.IndexOf("/p") - 1)] + $signArgs[($signArgs.IndexOf("/p") + 2)..($signArgs.Length - 1)]
+            & $signtool.FullName @signArgs
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
         & $signtool.FullName verify /a /v $file
         Remove-Item signing.pfx -Force
 
@@ -185,7 +192,14 @@ jobs:
         if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
         $signArgs += $file
         & $signtool.FullName @signArgs
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        if ($LASTEXITCODE -ne 0) {
+          if ($signArgs -contains "/p") {
+            Write-Host "Sign with password failed - retrying without /p (PFX may have no password)"
+            $signArgs = $signArgs[0..($signArgs.IndexOf("/p") - 1)] + $signArgs[($signArgs.IndexOf("/p") + 2)..($signArgs.Length - 1)]
+            & $signtool.FullName @signArgs
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
         & $signtool.FullName verify /a /v $file
         Remove-Item signing.pfx -Force
 
