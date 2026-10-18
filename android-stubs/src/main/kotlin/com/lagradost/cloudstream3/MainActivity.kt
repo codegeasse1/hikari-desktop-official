@@ -1,7 +1,7 @@
 package com.lagradost.cloudstream3
 
 /**
- * Stub for CloudStream Android's MainActivity.
+ * Stub for Hikari Android's MainActivity.
  * Required by plugins that reflectively access MainActivity.Companion.
  */
 class MainActivity {

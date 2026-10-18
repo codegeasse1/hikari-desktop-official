@@ -2,8 +2,8 @@ package com.lagradost.cloudstream3.utils
 
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import com.fasterxml.jackson.module.kotlin.readValue
-import com.lagradost.common.logging.AppLogger
-import com.lagradost.common.platform.PlatformPaths
+import com.hikari.common.logging.AppLogger
+import com.hikari.common.platform.PlatformPaths
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -54,7 +54,7 @@ object DataStore {
     }
 
     private fun registerKey(key: String, value: Any?) {
-        val pluginName = com.lagradost.runtime.loader.ExtensionLoader.getCallingPluginName()
+        val pluginName = com.hikari.runtime.loader.ExtensionLoader.getCallingPluginName()
         if (pluginName != null) {
             val type = when (value) {
                 is Boolean -> "Boolean"
@@ -65,7 +65,7 @@ object DataStore {
                 is Set<*> -> "StringSet"
                 else -> "String"
             }
-            com.lagradost.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", key, type, value, true)
+            com.hikari.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", key, type, value, true)
         }
     }
 
@@ -93,10 +93,10 @@ object DataStore {
     inline fun <reified T> getKey(path: String, key: String): T? {
         val fullKey = "$path/$key"
         val v = cache[fullKey]
-        val pluginName = com.lagradost.runtime.loader.ExtensionLoader.getCallingPluginName()
+        val pluginName = com.hikari.runtime.loader.ExtensionLoader.getCallingPluginName()
         if (pluginName != null) {
             val typeName = T::class.simpleName ?: "String"
-            com.lagradost.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", fullKey, typeName, v, true)
+            com.hikari.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", fullKey, typeName, v, true)
         }
 
         if (v != null) {
@@ -117,10 +117,10 @@ object DataStore {
 
     inline fun <reified T> getKey(key: String): T? {
         val v = cache[key]
-        val pluginName = com.lagradost.runtime.loader.ExtensionLoader.getCallingPluginName()
+        val pluginName = com.hikari.runtime.loader.ExtensionLoader.getCallingPluginName()
         if (pluginName != null) {
             val typeName = T::class.simpleName ?: "String"
-            com.lagradost.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", key, typeName, v, true)
+            com.hikari.common.storage.PluginSettingsSchemaRegistry.register(pluginName + "_", key, typeName, v, true)
         }
 
         if (v != null) {

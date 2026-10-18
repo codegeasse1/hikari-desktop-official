@@ -125,7 +125,7 @@
 ## 12. BRITTLE REFLECTION BOMBS: `AudioFile` Instantiation
 *   **Location:** `player-abstraction/.../PlayerLinkHandler.kt`
 *   **The Rot:** Using `.getDeclaredConstructor(String::class.java, Map::class.java).apply { isAccessible = true }.newInstance(...)` to force open internal Android library classes.
-*   **The Problem:** If upstream CloudStream updates the `AudioFile` data class (adding a parameter or changing obfuscation rules), this reflection call instantly throws `NoSuchMethodException` and bricks the desktop player.
+*   **The Problem:** If upstream Hikari updates the `AudioFile` data class (adding a parameter or changing obfuscation rules), this reflection call instantly throws `NoSuchMethodException` and bricks the desktop player.
 *   **The Modern Fix:** **Proper Bridge Abstractions.**
     *   Expose a proper builder or factory method in the `library` bridge rather than resorting to hostile reflection.
 

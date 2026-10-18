@@ -1,7 +1,7 @@
 package com.lagradost.cloudstream3.ui.settings
 
 /**
- * Stub for CloudStream Android's Globals object.
+ * Stub for Hikari Android's Globals object.
  * Required by plugins that expect to access Globals.INSTANCE and its layout methods.
  */
 object Globals {

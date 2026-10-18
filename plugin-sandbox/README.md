@@ -1,14 +1,14 @@
-# CloudStream Plugin Sandbox
+# Hikari Plugin Sandbox
 
 This module is a dedicated Sandbox Analyzer environment for testing Cloudstream plugins (`.cs3` files) locally. 
 
-Because Cloudstream plugins are built for Android, they often try to call Android-specific APIs (like `android.widget.Toast` or `android.util.Base64`). The Sandbox analyzes these plugins and runs them to tell you exactly which Android APIs are missing, which ones are safely faked (stubbed), and which ones are properly implemented for the Desktop port.
+Because Extension plugins are built for Android, they often try to call Android-specific APIs (like `android.widget.Toast` or `android.util.Base64`). The Sandbox analyzes these plugins and runs them to tell you exactly which Android APIs are missing, which ones are safely faked (stubbed), and which ones are properly implemented for the Desktop port.
 
 ## 🌐 1. Fetching Plugins from a Repository
 
 If you want to test an entire repository of plugins without downloading them by hand, we have built an automated fetcher!
 
-Run this command, replacing the URL with any valid Cloudstream repository JSON URL (like the mega-repo):
+Run this command, replacing the URL with any valid plugin repository JSON URL:
 ```bash
 ./gradlew :sandbox:runFetcher --args="https://raw.githubusercontent.com/recloudstream/cloudstream-extensions/master/plugins.json"
 ```

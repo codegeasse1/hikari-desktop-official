@@ -1,0 +1,148 @@
+package com.hikari.desktop.ui.navigation
+
+import com.arkivanov.decompose.ComponentContext
+import com.arkivanov.decompose.router.stack.ChildStack
+import com.arkivanov.decompose.router.stack.StackNavigation
+import com.arkivanov.decompose.router.stack.bringToFront
+import com.arkivanov.decompose.router.stack.childStack
+import com.arkivanov.decompose.router.stack.navigate
+import com.arkivanov.decompose.router.stack.pop
+import com.arkivanov.decompose.router.stack.popTo
+import com.arkivanov.decompose.router.stack.push
+import com.arkivanov.decompose.router.stack.replaceAll
+import com.arkivanov.decompose.value.Value
+import com.arkivanov.decompose.value.subscribe
+
+class DefaultRootComponent(
+    componentContext: ComponentContext,
+) : RootComponent, ComponentContext by componentContext {
+
+    private val navigation = StackNavigation<Config>()
+
+    // Currently we don't serialize state, so we just use plain class name as serializer (which is allowed if not using StateKeeper serialization)
+    // If we wanted to serialize, we would provide a kotlinx.serialization.KSerializer for Config,
+    // but on desktop process death restoration isn't strictly necessary.
+    override val childStack: Value<ChildStack<Config, RootComponent.Child>> =
+        childStack(
+            source = navigation,
+            serializer = null,
+            initialConfiguration = Config.Home, // Initial screen
+            handleBackButton = true, // Pops the stack on back button press
+            childFactory = ::createChild,
+        )
+
+    init {
+        childStack.subscribe { stack ->
+            when (val config = stack.active.configuration) {
+                is Config.Home -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Home")
+                is Config.Explore -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Explore")
+                is Config.Search -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Search")
+                is Config.Library -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Library")
+                is Config.Downloads -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Downloads")
+                is Config.History -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("History")
+                is Config.Extensions -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Extensions")
+                is Config.Settings -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Settings")
+                is Config.Details -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Details", config.preloadedName)
+                is Config.CategoryGrid -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Catalog", config.title)
+                is Config.Person -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Person", config.name)
+                is Config.Studio -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Studio", config.name)
+                is Config.FullCast -> com.hikari.desktop.discord.DiscordRpcManager.updateBrowsing("Cast & Crew", config.mediaTitle)
+            }
+        }
+    }
+
+    private fun createChild(config: Config, componentContext: ComponentContext): RootComponent.Child =
+        when (config) {
+            is Config.Home -> RootComponent.Child.Home(
+                com.hikari.desktop.ui.navigation.components.HomeComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Explore -> RootComponent.Child.Explore(
+                com.hikari.desktop.ui.navigation.components.ExploreComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.History -> RootComponent.Child.History(
+                com.hikari.desktop.ui.navigation.components.HistoryComponent(componentContext),
+            )
+            is Config.Search -> RootComponent.Child.Search(
+                com.hikari.desktop.ui.navigation.components.SearchComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Extensions -> RootComponent.Child.Extensions(
+                com.hikari.desktop.ui.navigation.components.ExtensionsComponent(componentContext, config.initialTab, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Library -> RootComponent.Child.Library(
+                com.hikari.desktop.ui.navigation.components.LibraryComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Downloads -> RootComponent.Child.Downloads(
+                com.hikari.desktop.ui.navigation.components.DownloadsComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Settings -> RootComponent.Child.Settings(
+                com.hikari.desktop.ui.navigation.components.SettingsComponent(componentContext, rootInstanceKeeper = this.instanceKeeper),
+            )
+            is Config.Details -> RootComponent.Child.Details(
+                com.hikari.desktop.ui.navigation.components.DetailsComponent(componentContext, config),
+            )
+            is Config.CategoryGrid -> RootComponent.Child.CategoryGrid(
+                com.hikari.desktop.ui.navigation.components.CategoryGridComponent(
+                    componentContext = componentContext,
+                    providerName = config.providerName,
+                    title = config.title,
+                ),
+            )
+            is Config.Person -> RootComponent.Child.Person(
+                com.hikari.desktop.ui.navigation.components.PersonComponent(
+                    componentContext = componentContext,
+                    config = config,
+                ),
+            )
+            is Config.Studio -> RootComponent.Child.Studio(
+                com.hikari.desktop.ui.navigation.components.StudioComponent(
+                    componentContext = componentContext,
+                    config = config,
+                ),
+            )
+            is Config.FullCast -> RootComponent.Child.FullCast(
+                com.hikari.desktop.ui.navigation.components.FullCastComponent(
+                    componentContext = componentContext,
+                    config = config,
+                ),
+            )
+        }
+
+    override fun push(config: Config) {
+        navigation.push(config)
+    }
+
+    override fun pop() {
+        navigation.pop()
+    }
+
+    override fun popTo(index: Int) {
+        navigation.popTo(index)
+    }
+
+    override fun replaceAll(config: Config) {
+        navigation.replaceAll(config)
+    }
+
+    override fun bringToFront(config: Config) {
+        when (config) {
+            is Config.Home -> {
+                navigation.replaceAll(Config.Home)
+            }
+            is Config.Explore,
+            is Config.Search,
+            is Config.Library,
+            is Config.Downloads,
+            is Config.History,
+            is Config.Extensions,
+            is Config.Settings,
+            -> {
+                // Top-level Dock destinations are anchored directly to Home.
+                // Pressing Back on any top-level tab cleanly returns to Home!
+                navigation.navigate { listOf(Config.Home, config) }
+            }
+            else -> {
+                navigation.bringToFront(config)
+            }
+        }
+    }
+}

@@ -1,11 +1,11 @@
 package com.lagradost.cloudstream3.syncproviders.providers
 
-import com.lagradost.cloudstream3.desktop.stremio.StremioAddonManager
+import com.hikari.desktop.stremio.StremioAddonManager
 import com.lagradost.cloudstream3.subtitles.AbstractSubtitleEntities.SubtitleEntity
 import com.lagradost.cloudstream3.subtitles.AbstractSubtitleEntities.SubtitleSearch
 import com.lagradost.cloudstream3.syncproviders.AuthData
 import com.lagradost.cloudstream3.syncproviders.SubtitleAPI
-import com.lagradost.common.logging.AppLogger
+import com.hikari.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

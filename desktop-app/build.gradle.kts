@@ -34,7 +34,7 @@ configurations.all {
 }
 
 dependencies {
-    // CloudStream Library (KMP, JVM target)
+    // Hikari Library (KMP, JVM target)
     // Contains: MainAPI, extractors, metaproviders, WebViewResolver (JVM actual), etc.
     implementation(project(":library"))
     implementation(libs.kotlinx.serialization.json)
@@ -107,7 +107,7 @@ dependencies {
 // Compose Desktop application configuration
 compose.desktop {
     application {
-        mainClass = "com.lagradost.cloudstream3.desktop.MainKt"
+        mainClass = "com.hikari.desktop.MainKt"
         jvmArgs +=
             listOf(
                 "-Xms256m",
@@ -119,7 +119,7 @@ compose.desktop {
                 "-Djava.net.preferIPv6Addresses=true",
                 "-Djava.library.path=\$APPDIR/resources/jni",
                 "-Djna.library.path=\$APPDIR/resources/mpv",
-                "-Dcloudstream.version=${project.findProperty("APP_VERSION")}",
+                "-Dhikari.version=${project.findProperty("APP_VERSION")}",
                 "-Dfile.encoding=UTF-8",
             )
         buildTypes.release.proguard {
@@ -181,7 +181,7 @@ tasks.matching { it.name == "run" }.configureEach {
         "-XX:CICompilerCount=2",
         "-Djna.library.path=${project.file("appResources/windows/mpv").absolutePath}",
         "-Djava.library.path=${project.file("appResources/windows/jni").absolutePath}",
-        "-Dcloudstream.version=${project.findProperty("APP_VERSION")}",
+        "-Dhikari.version=${project.findProperty("APP_VERSION")}",
     )
 }
 
@@ -207,13 +207,13 @@ tasks.withType<Test> {
 }
 
 tasks.register<JavaExec>("runTestWebViewPlayer") {
-    mainClass.set("com.lagradost.cloudstream3.desktop.test.TestWebViewPlayerKt")
+    mainClass.set("com.hikari.desktop.test.TestWebViewPlayerKt")
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs("-Djava.library.path=appResources/windows/jni", "-Djna.library.path=appResources/windows/mpv")
 }
 
 tasks.register<JavaExec>("runTestMpvPlayer") {
-    mainClass.set("com.lagradost.cloudstream3.desktop.test.TestMpvPlayerKt")
+    mainClass.set("com.hikari.desktop.test.TestMpvPlayerKt")
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs("-Djna.library.path=appResources/windows/mpv")
 }

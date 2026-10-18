@@ -33,7 +33,7 @@ tasks.withType<Test> {
 sqldelight {
     databases {
         create("DesktopDatabase") {
-            packageName.set("com.lagradost.common.db")
+            packageName.set("com.hikari.common.db")
         }
     }
 }

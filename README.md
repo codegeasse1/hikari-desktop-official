@@ -1,6 +1,6 @@
 # Hikari Desktop (Official)
 
-Desktop-native streaming client built with **Compose Multiplatform** for 64-bit Windows. Hikari runs CloudStream-compatible extensions plus Nuvio, Stremio, SkyStream, Aniyomi, IPTV and Hiki sources.
+Desktop-native streaming client built with **Compose Multiplatform** for 64-bit Windows. Hikari runs Hikari-compatible extensions plus Nuvio, Stremio, SkyStream, Aniyomi, IPTV and Hiki sources.
 > **Active Developer & Experimental Pre-Alpha State**
 > * **Developer-Only Environment:** This repository is an active, fast-moving development and experimentation codebase intended strictly for developers and technical testers. It is **not** a stable release and is **not** intended for general or regular end-user consumption.
 > * **AI-Assisted Codebase & Instability:** This codebase is actively researched, developed, and refactored with AI assistance. It may contain highly experimental implementations, non-standard patterns, and volatile code.
@@ -8,8 +8,8 @@ Desktop-native streaming client built with **Compose Multiplatform** for 64-bit 
 
 > [!IMPORTANT]
 > **Project Scope & Architecture Directives**
-> * **Desktop-Exclusive Hard Fork:** This repository is built exclusively for 64-bit Windows desktop. It is an independent hard fork and does not merge upstream into Android CloudStream.
-> * **Zero Affiliation:** This project is independent and unaffiliated with the original Android CloudStream application or its development team. Please do not contact upstream developers regarding this client.
+> * **Desktop-Exclusive Hard Fork:** This repository is built exclusively for 64-bit Windows desktop. It is an independent hard fork and does not merge upstream into Android Hikari.
+> * **Zero Affiliation:** This project is independent and unaffiliated with the original Android Hikari application or its development team. Please do not contact upstream developers regarding this client.
 > * **Ad-Free Policy:** Strict ad-free project. Derivative builds and forks must remain clean, free, and open.
 
 
@@ -24,7 +24,7 @@ The application is structured into modular subprojects separating platform abstr
 | **`:player-abstraction`** | JNA bindings to the native `libmpv` C-core for hardware-accelerated video decoding. |
 | **`:android-stubs`** | Stubs for Android platform APIs (`Context`, `SharedPreferences`, `Build`, `DisplayMetrics`) allowing Android extension bytecode to run on the JVM. |
 | **`:common`** | SQLite persistence layer powered by **SQLDelight** for local history, preferences, and state management. |
-| **`:library`** | Base CloudStream contracts and core provider interfaces. |
+| **`:library`** | Base Hikari contracts and core provider interfaces. |
 
 ---
 
@@ -111,7 +111,7 @@ Alternatively, execute tasks directly via Gradle:
 ### The Win32 Airspace & Fast-Path Architecture
 Directly overlaying Java Swing / Compose Multiplatform components onto a native video window handle (`HWND`) causes severe visual occlusion and flicker (the Win32 "Airspace problem"). Furthermore, routing high-frequency seekbar scrubs through JVM garbage collection and JNI layers introduces 10–50ms latency delays that cause scrubber rubber-banding.
 
-CloudStream Desktop resolves this through a hybrid native architecture in `desktop-app/src/main/cpp/player_bridge.cpp`:
+Hikari Desktop resolves this through a hybrid native architecture in `desktop-app/src/main/cpp/player_bridge.cpp`:
 1. **HWND Composition:** A unified native Win32 container (`g_containerHwnd`) hosts MPV's render context as the base layer, with a transparent Microsoft WebView2 Chromium instance layered directly on top.
 2. **C++ Native Fast-Path:** Timeline scrubbing, volume changes, and state events are intercepted and processed directly inside C++ in sub-millisecond time (`g_mpv_command_string`), completely bypassing JVM overhead.
 3. **High-Frequency Polling:** A native timer polls MPV playback positions (`time-pos`, `bufferPos`) and pushes updates via `PostWebMessageAsJson` without allocating JVM objects.

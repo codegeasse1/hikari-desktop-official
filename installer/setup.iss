@@ -3,7 +3,7 @@
 AppId={{C626E83F-8C3A-4D78-B5B3-FA19FE223E0C}}
 AppName=Hikari
 AppVersion={#AppVersion}
-AppPublisher=Ayu
+AppPublisher=Hikari
 AppPublisherURL=https://github.com/codegeasse1/hikari-desktop-official
 AppSupportURL=https://github.com/codegeasse1/hikari-desktop-official
 AppUpdatesURL=https://github.com/codegeasse1/hikari-desktop-official

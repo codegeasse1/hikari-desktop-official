@@ -24,7 +24,7 @@ dependencies {
     // Needs access to stubs to pass to plugins
     implementation(project(":android-stubs"))
 
-    // Needs access to base CloudstreamPlugin and Extractors
+    // Needs access to base HikariPlugin and Extractors
     implementation(project(":library"))
     implementation(libs.nicehttp)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

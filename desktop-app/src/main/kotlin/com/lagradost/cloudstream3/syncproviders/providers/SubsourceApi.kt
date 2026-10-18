@@ -1,7 +1,7 @@
 package com.lagradost.cloudstream3.syncproviders.providers
 
-import com.lagradost.cloudstream3.desktop.player.PlayerConfig
-import com.lagradost.cloudstream3.desktop.subtitles.SubsourceSubtitleProvider
+import com.hikari.desktop.player.PlayerConfig
+import com.hikari.desktop.subtitles.SubsourceSubtitleProvider
 import com.lagradost.cloudstream3.subtitles.AbstractSubtitleEntities.SubtitleEntity
 import com.lagradost.cloudstream3.subtitles.AbstractSubtitleEntities.SubtitleSearch
 import com.lagradost.cloudstream3.syncproviders.AccountManager
@@ -11,7 +11,7 @@ import com.lagradost.cloudstream3.syncproviders.AuthLoginResponse
 import com.lagradost.cloudstream3.syncproviders.AuthToken
 import com.lagradost.cloudstream3.syncproviders.AuthUser
 import com.lagradost.cloudstream3.syncproviders.SubtitleAPI
-import com.lagradost.common.storage.DesktopDataStore
+import com.hikari.common.storage.DesktopDataStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 

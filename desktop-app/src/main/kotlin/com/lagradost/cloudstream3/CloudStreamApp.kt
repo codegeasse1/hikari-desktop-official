@@ -4,10 +4,10 @@ import android.content.Context
 import android.content.DesktopContextProvider
 import java.lang.ref.WeakReference
 
-/** Minimal stub of CloudStreamApp used by some plugins. Provides access to a global context
+/** Minimal stub of HikariApp used by some plugins. Provides access to a global context
  * and helpers for storing simple keys in SharedPreferences. This is intentionally minimal
  * and may be expanded if plugins require more functionality. */
-class CloudStreamApp {
+class HikariApp {
     companion object {
         private var _context: WeakReference<Context>? = null
         var context: Context?
@@ -29,22 +29,22 @@ class CloudStreamApp {
         // Simple key/value helpers using DesktopKVStore
         fun <T> setKey(folder: String, path: String, value: T) {
             if (value == null) {
-                com.lagradost.common.storage.DesktopDataStore.removeKey(path)
+                com.hikari.common.storage.DesktopDataStore.removeKey(path)
             } else {
-                com.lagradost.common.storage.DesktopDataStore.setKey(path, value)
+                com.hikari.common.storage.DesktopDataStore.setKey(path, value)
             }
         }
 
         fun <T> setKey(path: String, value: T) {
             if (value == null) {
-                com.lagradost.common.storage.DesktopDataStore.removeKey(path)
+                com.hikari.common.storage.DesktopDataStore.removeKey(path)
             } else {
-                com.lagradost.common.storage.DesktopDataStore.setKey(path, value)
+                com.hikari.common.storage.DesktopDataStore.setKey(path, value)
             }
         }
 
         fun removeKey(folder: String, path: String) {
-            com.lagradost.common.storage.DesktopDataStore.removeKey(path)
+            com.hikari.common.storage.DesktopDataStore.removeKey(path)
         }
 
         inline fun <reified T> getKey(path: String, defVal: T?): T? {
@@ -62,9 +62,9 @@ class CloudStreamApp {
             val prefName = if (path.contains("_")) path.substringBefore("_") + "_" else "global_"
             val keyWithoutPrefix = if (path.contains("_")) path.substringAfter("_") else path
 
-            com.lagradost.common.storage.PluginSettingsSchemaRegistry.register(prefName, keyWithoutPrefix, type, defVal, false)
+            com.hikari.common.storage.PluginSettingsSchemaRegistry.register(prefName, keyWithoutPrefix, type, defVal, false)
 
-            return com.lagradost.common.storage.DesktopDataStore.getKey<T>(path) ?: defVal
+            return com.hikari.common.storage.DesktopDataStore.getKey<T>(path) ?: defVal
         }
     }
 }

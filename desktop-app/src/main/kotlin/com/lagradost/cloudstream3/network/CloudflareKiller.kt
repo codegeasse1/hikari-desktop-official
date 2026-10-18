@@ -1,6 +1,6 @@
 package com.lagradost.cloudstream3.network
 
-import com.lagradost.common.logging.AppLogger
+import com.hikari.common.logging.AppLogger
 import okhttp3.Cookie
 import okhttp3.CookieJar
 import okhttp3.Headers
@@ -193,14 +193,14 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                 timestamp = System.currentTimeMillis(),
             )
 
-            val jar = globalCookieJar as? com.lagradost.cloudstream3.desktop.network.DesktopCookieJar
-                ?: com.lagradost.cloudstream3.desktop.network.DesktopCookieJar.activeInstance
+            val jar = globalCookieJar as? com.hikari.desktop.network.DesktopCookieJar
+                ?: com.hikari.desktop.network.DesktopCookieJar.activeInstance
             jar?.saveCookies(finalCookies)
         }
 
         fun getAllStoredCookies(): Map<String, List<Cookie>> {
-            val jar = globalCookieJar as? com.lagradost.cloudstream3.desktop.network.DesktopCookieJar
-                ?: com.lagradost.cloudstream3.desktop.network.DesktopCookieJar.activeInstance
+            val jar = globalCookieJar as? com.hikari.desktop.network.DesktopCookieJar
+                ?: com.hikari.desktop.network.DesktopCookieJar.activeInstance
             val jarCookies = jar?.getAllStoredCookies()?.toMutableMap() ?: mutableMapOf()
 
             for ((h, clearance) in hostStates) {
@@ -216,15 +216,15 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
             hostStates.remove(clean)
             hostStates.keys.filter { it.endsWith(".$clean") }.forEach { hostStates.remove(it) }
 
-            val jar = globalCookieJar as? com.lagradost.cloudstream3.desktop.network.DesktopCookieJar
-                ?: com.lagradost.cloudstream3.desktop.network.DesktopCookieJar.activeInstance
+            val jar = globalCookieJar as? com.hikari.desktop.network.DesktopCookieJar
+                ?: com.hikari.desktop.network.DesktopCookieJar.activeInstance
             jar?.removeCookiesForDomain(clean)
         }
 
         fun clearAllClearance() {
             hostStates.clear()
-            val jar = globalCookieJar as? com.lagradost.cloudstream3.desktop.network.DesktopCookieJar
-                ?: com.lagradost.cloudstream3.desktop.network.DesktopCookieJar.activeInstance
+            val jar = globalCookieJar as? com.hikari.desktop.network.DesktopCookieJar
+                ?: com.hikari.desktop.network.DesktopCookieJar.activeInstance
             jar?.removeAll()
         }
     }
@@ -266,7 +266,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
 
 
         // If an active browser proxy exists for host, ensure not marked as failed
-        if (com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.hasActiveProxy(host)) {
+        if (com.hikari.desktop.network.SystemBrowserCdpBypass.hasActiveProxy(host)) {
             unmarkFailed(host)
         }
 
@@ -276,7 +276,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
         }
 
         // If host has an active browser proxy, route requests through it (binary for static assets, text for HTML/JSON)
-        if (com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.hasActiveProxy(host)) {
+        if (com.hikari.desktop.network.SystemBrowserCdpBypass.hasActiveProxy(host)) {
             val proxyResponse = fetchViaBrowserProxy(request, isBinary = isStatic)
             if (proxyResponse != null) return proxyResponse
             AppLogger.w("$TAG: Browser proxy failed for $host, falling through to normal path.")
@@ -321,14 +321,14 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                 hostStates.remove(host)
             }
 
-            val isBypassAllowed = com.lagradost.common.storage.DesktopDataStore.getKey<Boolean>(
-                com.lagradost.common.storage.DesktopDataStore.PREF_ALLOW_CF_BYPASS,
+            val isBypassAllowed = com.hikari.common.storage.DesktopDataStore.getKey<Boolean>(
+                com.hikari.common.storage.DesktopDataStore.PREF_ALLOW_CF_BYPASS,
             ) ?: false
 
             if (!isBypassAllowed) {
                 AppLogger.w("$TAG: Cloudflare challenge detected for $host, but browser solver is disabled by user.")
                 try {
-                    com.lagradost.cloudstream3.desktop.ui.components.AppToastManager.showWarning(
+                    com.hikari.desktop.ui.components.AppToastManager.showWarning(
                         "This source requires Cloudflare clearance. Enable 'Experimental Cloudflare Solver' in Settings > Network. It uses a secure, isolated sandbox browser with zero access to your personal data, passwords, or accounts.",
                         durationMs = 7000L,
                     )
@@ -346,13 +346,13 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
 
                     AppLogger.i("$TAG: Opening manual verification window for $host...")
                     try {
-                        com.lagradost.cloudstream3.desktop.ui.components.AppToastManager.showInfo(
+                        com.hikari.desktop.ui.components.AppToastManager.showInfo(
                             "Opening isolated sandbox browser to resolve Cloudflare...",
                             durationMs = 3000L,
                         )
                     } catch (_: Throwable) {}
                     kotlinx.coroutines.runBlocking {
-                        com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.launchManualClearance(
+                        com.hikari.desktop.network.SystemBrowserCdpBypass.launchManualClearance(
                             targetUrl = request.url.toString(),
                             hostName = host,
                         )
@@ -363,7 +363,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                 if (solved && solvedClearance != null && solvedClearance.cookies.isNotEmpty()) {
                     AppLogger.i("$TAG: Successfully acquired clearance for $host. Retrying request.")
                     try {
-                        com.lagradost.cloudstream3.desktop.ui.components.AppToastManager.showSuccess(
+                        com.hikari.desktop.ui.components.AppToastManager.showSuccess(
                             "Cloudflare clearance resolved successfully.",
                             durationMs = 3000L,
                         )
@@ -375,7 +375,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                     // route through genuine browser TLS without repeat challenges or opening new windows.
                     hostStates[host] = solvedClearance.copy(isTlsBound = true)
                     val proxyActivated = kotlinx.coroutines.runBlocking {
-                        com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.activateFetchProxy(host)
+                        com.hikari.desktop.network.SystemBrowserCdpBypass.activateFetchProxy(host)
                     }
                     // Prioritize background browser fetch proxy if active, ensuring genuine HTTP responses
                     // and uncorrupted JSON payloads without DOM formatting artifacts.
@@ -388,7 +388,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                         request.url.encodedPath.endsWith(".json", ignoreCase = true)
 
                     if (!isApiEndpoint) {
-                        val cachedPage = com.lagradost.cloudstream3.desktop.network.SettledPageCache.consume(request.url.toString())
+                        val cachedPage = com.hikari.desktop.network.SettledPageCache.consume(request.url.toString())
                         if (cachedPage != null) {
                             AppLogger.i("$TAG: Serving settled HTML from cache after clearance for ${request.url}")
                             val bodyBytes = cachedPage.html.toByteArray(Charsets.UTF_8)
@@ -413,7 +413,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
 
                     if (!proxyActivated) {
                         val activated = kotlinx.coroutines.runBlocking {
-                            com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.activateFetchProxy(host)
+                            com.hikari.desktop.network.SystemBrowserCdpBypass.activateFetchProxy(host)
                         }
                         if (activated) {
                             val proxyResponse = fetchViaBrowserProxy(request, isBinary = isStatic)
@@ -430,7 +430,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
                 } else {
                     AppLogger.w("$TAG: Manual clearance was closed or failed for $host.")
                     try {
-                        com.lagradost.cloudstream3.desktop.ui.components.AppToastManager.showWarning(
+                        com.hikari.desktop.ui.components.AppToastManager.showWarning(
                             "Cloudflare verification window was closed before completion.",
                             durationMs = 4000L,
                         )
@@ -546,7 +546,7 @@ class CloudflareKiller(private val cookieJar: CookieJar? = null) : Interceptor {
      */
     private fun fetchViaBrowserProxy(request: Request, isBinary: Boolean = false): Response? {
         val result = kotlinx.coroutines.runBlocking {
-            com.lagradost.cloudstream3.desktop.network.SystemBrowserCdpBypass.fetchViaProxy(
+            com.hikari.desktop.network.SystemBrowserCdpBypass.fetchViaProxy(
                 url = request.url.toString(),
                 method = request.method,
                 headers = buildMap {
