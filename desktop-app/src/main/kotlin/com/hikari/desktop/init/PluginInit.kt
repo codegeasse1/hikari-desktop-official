@@ -12,6 +12,8 @@ import com.hikari.common.logging.AppLogger
 import com.hikari.common.platform.PlatformPaths
 import com.hikari.runtime.loader.ExtensionLoader
 import com.hikari.sources.hiki.HikiMainApi
+import com.hikari.sources.nuvio.NuvioMainApi
+import com.hikari.sources.nuvio.NuvioManager
 import com.hikari.ext.providers.YtsProvider
 import com.hikari.sources.iptv.IptvMainApi
 import com.hikari.sources.stremio.StremioAddonApi
@@ -62,6 +64,11 @@ fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
             val hikiEnabled = com.hikari.common.storage.DesktopDataStore
                 .getKey<Boolean>(PreferenceKeys.PREF_HIKI_ENABLED) ?: true
             if (hikiEnabled) out.add(HikiMainApi(YtsProvider()))
+        }
+        runCatching {
+            for (f in NuvioManager.installedScrapers()) {
+                out.add(NuvioMainApi(f))
+            }
         }
     }
     return out
