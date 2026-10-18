@@ -13,6 +13,8 @@ import com.hikari.common.platform.PlatformPaths
 import com.hikari.runtime.loader.ExtensionLoader
 import com.hikari.sources.hiki.HikiMainApi
 import com.hikari.sources.nuvio.NuvioMainApi
+import com.hikari.sources.sky.SkyStreamMainApi
+import com.hikari.sources.sky.SkyStreamManager
 import com.hikari.sources.nuvio.NuvioManager
 import com.hikari.ext.providers.YtsProvider
 import com.hikari.sources.iptv.IptvMainApi
@@ -68,6 +70,11 @@ fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
         runCatching {
             for (f in NuvioManager.installedScrapers()) {
                 out.add(NuvioMainApi(f))
+            }
+        }
+        runCatching {
+            for (d in SkyStreamManager.installedPlugins()) {
+                out.add(SkyStreamMainApi(d))
             }
         }
     }

@@ -113,7 +113,7 @@ class NuvioMainApi(
                 this.year = year
                 this.plot = plot
                 this.tags = genres
-                this.backdropUrl(backdrop)
+                backgroundPosterUrl = backdrop
             }
         }
         val episodes = seriesEpisodes(ref.tmdbId)
@@ -124,9 +124,6 @@ class NuvioMainApi(
             this.tags = genres
             this.backdropUrl(backdrop)
         }
-    }
-
-    private fun LoadResponse.backdropUrl(unused: String?) {
     }
 
     private suspend fun seriesEpisodes(tmdbId: String): List<Episode> = withContext(Dispatchers.IO) {
@@ -247,7 +244,7 @@ class NuvioMainApi(
             val title: String,
         )
 
-        private enum class Niche { ANIME, HINDI, KDRAMA, FRENCH, PERSIAN, GENERAL }
+        internal enum class Niche { ANIME, HINDI, KDRAMA, FRENCH, PERSIAN, GENERAL }
 
         private val GENERAL_ROWS = listOf(
             RowDef("g0", false, "/trending/all/week", emptyMap(), "Trending"),
