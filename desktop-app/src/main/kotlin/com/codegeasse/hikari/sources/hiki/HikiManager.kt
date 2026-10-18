@@ -189,7 +189,7 @@ object HikiManager {
             installJar(bytes, fileName, sourceUrl, probe.mainClass)
         }
 
-    private suspend fun installJar(bytes: ByteArray, fileName: String?, sourceUrl: String?, pluginClass: String): Result<String> =
+    private suspend fun installJar(bytes: ByteArray, fileName: String?, sourceUrl: String?, pluginClass: String?): Result<String> =
         withContext(Dispatchers.IO) {
             val dir = File(extDir(), "Local_Sandbox").apply { mkdirs() }
             val target = File(dir, safeName(fileName ?: sourceUrl?.substringAfterLast('/') ?: "extension.hiki"))
