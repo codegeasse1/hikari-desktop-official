@@ -139,6 +139,8 @@ jobs:
         }
         Write-Host "Using signtool: $($signtool.FullName)"
         $file = "desktop-app\build\compose\binaries\main\app\Hikari-Desktop\Hikari-Desktop.exe"
+        attrib -R $file
+        (Get-Item $file -Force).IsReadOnly = $false
         if (-not (Test-Path $file)) {
           Write-Error "App exe not found at $file. The Compose output layout may have changed."
           exit 1
@@ -206,6 +208,8 @@ jobs:
         }
         Write-Host "Using signtool: $($signtool.FullName)"
         $file = "desktop-app\build\outputs\Hikari-Setup.exe"
+        attrib -R $file
+        (Get-Item $file -Force).IsReadOnly = $false
         if (-not (Test-Path $file)) {
           Write-Error "Installer not found at $file. Check OutputDir/OutputBaseFilename in installer/setup.iss."
           exit 1
