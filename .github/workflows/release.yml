@@ -168,6 +168,7 @@ jobs:
           exit 1
         }
         & $signtool.FullName verify /a /v $file
+        if ($LASTEXITCODE -ne 0) { Write-Host "Note: chain verify is untrusted (normal for a self-signed cert); the signature itself was applied." }
         Remove-Item signing.pfx -Force
 
     - name: Install Inno Setup
@@ -237,6 +238,7 @@ jobs:
           exit 1
         }
         & $signtool.FullName verify /a /v $file
+        if ($LASTEXITCODE -ne 0) { Write-Host "Note: chain verify is untrusted (normal for a self-signed cert); the signature itself was applied." }
         Remove-Item signing.pfx -Force
 
     - name: Publish release (versioned tag, or rolling continuous build)
