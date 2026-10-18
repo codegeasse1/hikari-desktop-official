@@ -77,7 +77,15 @@ object IptvPlaylist {
                 val upper = line.uppercase()
                 when {
                     upper.startsWith("#EXTINF") -> {
-                        val comma = line.lastIndexOf(',')
+                        // The title follows the FIRST comma outside quotes: titles
+                        // themselves may contain commas ("News, Live").
+                        var comma = -1
+                        var inQuotes = false
+                        for (idx in line.indices) {
+                            val ch = line[idx]
+                            if (ch == '"') inQuotes = !inQuotes
+                            else if (ch == ',' && !inQuotes) { comma = idx; break }
+                        }
                         val head = if (comma >= 0) line.substring(0, comma) else line
                         val tail = if (comma >= 0) line.substring(comma + 1).trim() else ""
                         val attrs = HashMap<String, String>()
