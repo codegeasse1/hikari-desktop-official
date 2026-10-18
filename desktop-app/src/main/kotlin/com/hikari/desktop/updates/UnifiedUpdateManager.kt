@@ -140,7 +140,7 @@ object UnifiedUpdateManager {
                         val update = PendingUpdate(
                             id = "app_client",
                             type = UpdateType.APP_CLIENT,
-                            title = "CS3 Desktop Client",
+                            title = "Hikari Desktop",
                             currentVersion = "v$currentVersion",
                             newVersion = release.tag_name,
                             releaseNotes = release.body,

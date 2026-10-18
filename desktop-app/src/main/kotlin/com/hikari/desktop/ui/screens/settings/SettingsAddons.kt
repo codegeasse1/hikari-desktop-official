@@ -152,7 +152,7 @@ fun SettingsAddons(viewModel: ExtensionsViewModel) {
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Install community web manifests (manifest.json) to expand video stream sources, subtitles, and external catalogs without modifying native CS3 plugins.",
+                        text = "Install community web manifests (manifest.json) to expand video stream sources, subtitles, and external catalogs without modifying installed extensions.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

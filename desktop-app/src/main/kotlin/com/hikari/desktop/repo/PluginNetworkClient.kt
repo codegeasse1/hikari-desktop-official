@@ -123,6 +123,20 @@ internal object PluginNetworkClient {
                     }
                 }
 
+                val docTree = runCatching { mapper.readTree(body) }.getOrNull()
+                val embeddedPlugins = docTree?.takeIf { it.isObject }?.get("plugins")?.takeIf { it.isArray }
+                if (embeddedPlugins != null) {
+                    val repoName = docTree.get("name")?.asText()?.takeIf { it.isNotBlank() }
+                        ?: finalUrl.substringBeforeLast('/').substringAfterLast('/').ifBlank { "Custom Repository" }
+                    return@withContext Repository(
+                        name = repoName,
+                        description = docTree.get("description")?.asText(),
+                        manifestVersion = 1,
+                        pluginLists = listOf(finalUrl),
+                        iconUrl = null,
+                    )
+                }
+
                 val rawRepo = mapper.readValue(body, Repository::class.java)
                 val rawLists = if (rawRepo.pluginLists.isNullOrEmpty()) {
                     listOf(
@@ -167,7 +181,18 @@ internal object PluginNetworkClient {
                     AppLogger.i("Plugin list from $pluginListUrl returned HTML — likely behind a WAF.")
                     return@withContext emptyList()
                 }
-                val rawPlugins = mapper.readValue(body, object : TypeReference<List<SitePlugin>>() {})
+                val rootNode = mapper.readTree(body)
+                val pluginsArray = when {
+                    rootNode.isArray -> rootNode
+                    rootNode.isObject && rootNode.get("plugins")?.isArray == true -> rootNode.get("plugins")
+                    else -> null
+                } ?: return@withContext emptyList()
+                for (element in pluginsArray) {
+                    if (element is com.fasterxml.jackson.databind.node.ObjectNode && !element.has("internalName")) {
+                        element.get("name")?.asText()?.takeIf { it.isNotBlank() }?.let { element.put("internalName", it) }
+                    }
+                }
+                val rawPlugins: List<SitePlugin> = mapper.treeToValue(pluginsArray, object : TypeReference<List<SitePlugin>>() {})
                 return@withContext rawPlugins
                     .filter { it.status != 0 }
                     .map { plugin ->
