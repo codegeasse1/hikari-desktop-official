@@ -121,10 +121,16 @@ jobs:
           exit 1
         }
         try {
-          [IO.File]::WriteAllBytes("signing.pfx", [Convert]::FromBase64String($env:CERT_B64))
+          $pfxBytes = [Convert]::FromBase64String($env:CERT_B64)
         } catch {
-          [IO.File]::WriteAllText("signing.pfx", $env:CERT_B64)
+          Write-Error "WINDOWS_SIGNING_CERT is not valid base64. Re-export the .pfx and paste its base64."
+          exit 1
         }
+        if ($pfxBytes.Length -lt 100 -or $pfxBytes[0] -ne 0x30 -or $pfxBytes[4] -ne 0x02) {
+          Write-Error "WINDOWS_SIGNING_CERT decodes but is not a PFX bundle (not a .pfx export?)."
+          exit 1
+        }
+        [IO.File]::WriteAllBytes("signing.pfx", $pfxBytes)
         $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
           Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
         if ($null -eq $signtool) {
@@ -141,13 +147,23 @@ jobs:
         if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
         $signArgs += $file
         & $signtool.FullName @signArgs
-        if ($LASTEXITCODE -ne 0) {
-          if ($signArgs -contains "/p") {
-            Write-Host "Sign with password failed - retrying without /p (PFX may have no password)"
-            $signArgs = $signArgs[0..($signArgs.IndexOf("/p") - 1)] + $signArgs[($signArgs.IndexOf("/p") + 2)..($signArgs.Length - 1)]
+        if (($LASTEXITCODE -ne 0) -and ($signArgs -contains "/p")) {
+          $pw = $env:CERT_PASSWORD
+          if (-not [string]::IsNullOrEmpty($pw) -and $pw.Trim() -ne $pw) {
+            Write-Host "Retrying with trimmed password (the secret may carry stray whitespace)"
+            $signArgs[$signArgs.IndexOf("/p") + 1] = $pw.Trim()
             & $signtool.FullName @signArgs
           }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        if (($LASTEXITCODE -ne 0) -and ($signArgs -contains "/p")) {
+          Write-Host "Retrying without /p (the PFX may have no password)"
+          $pi = $signArgs.IndexOf("/p")
+          $signArgs = @($signArgs[0..($pi - 1)] + $signArgs[($pi + 2)..($signArgs.Length - 1)])
+          & $signtool.FullName @signArgs
+        }
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Signing failed: WINDOWS_CERT_PASSWORD does not unlock WINDOWS_SIGNING_CERT. Open the .pfx on your PC to confirm its exact password, then update the secret."
+          exit 1
         }
         & $signtool.FullName verify /a /v $file
         Remove-Item signing.pfx -Force
@@ -172,10 +188,16 @@ jobs:
           exit 1
         }
         try {
-          [IO.File]::WriteAllBytes("signing.pfx", [Convert]::FromBase64String($env:CERT_B64))
+          $pfxBytes = [Convert]::FromBase64String($env:CERT_B64)
         } catch {
-          [IO.File]::WriteAllText("signing.pfx", $env:CERT_B64)
+          Write-Error "WINDOWS_SIGNING_CERT is not valid base64. Re-export the .pfx and paste its base64."
+          exit 1
         }
+        if ($pfxBytes.Length -lt 100 -or $pfxBytes[0] -ne 0x30 -or $pfxBytes[4] -ne 0x02) {
+          Write-Error "WINDOWS_SIGNING_CERT decodes but is not a PFX bundle (not a .pfx export?)."
+          exit 1
+        }
+        [IO.File]::WriteAllBytes("signing.pfx", $pfxBytes)
         $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
           Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
         if ($null -eq $signtool) {
@@ -192,13 +214,23 @@ jobs:
         if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
         $signArgs += $file
         & $signtool.FullName @signArgs
-        if ($LASTEXITCODE -ne 0) {
-          if ($signArgs -contains "/p") {
-            Write-Host "Sign with password failed - retrying without /p (PFX may have no password)"
-            $signArgs = $signArgs[0..($signArgs.IndexOf("/p") - 1)] + $signArgs[($signArgs.IndexOf("/p") + 2)..($signArgs.Length - 1)]
+        if (($LASTEXITCODE -ne 0) -and ($signArgs -contains "/p")) {
+          $pw = $env:CERT_PASSWORD
+          if (-not [string]::IsNullOrEmpty($pw) -and $pw.Trim() -ne $pw) {
+            Write-Host "Retrying with trimmed password (the secret may carry stray whitespace)"
+            $signArgs[$signArgs.IndexOf("/p") + 1] = $pw.Trim()
             & $signtool.FullName @signArgs
           }
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        }
+        if (($LASTEXITCODE -ne 0) -and ($signArgs -contains "/p")) {
+          Write-Host "Retrying without /p (the PFX may have no password)"
+          $pi = $signArgs.IndexOf("/p")
+          $signArgs = @($signArgs[0..($pi - 1)] + $signArgs[($pi + 2)..($signArgs.Length - 1)])
+          & $signtool.FullName @signArgs
+        }
+        if ($LASTEXITCODE -ne 0) {
+          Write-Error "Signing failed: WINDOWS_CERT_PASSWORD does not unlock WINDOWS_SIGNING_CERT. Open the .pfx on your PC to confirm its exact password, then update the secret."
+          exit 1
         }
         & $signtool.FullName verify /a /v $file
         Remove-Item signing.pfx -Force
