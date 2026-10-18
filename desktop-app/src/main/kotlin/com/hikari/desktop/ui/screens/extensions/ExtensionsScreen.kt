@@ -4,12 +4,18 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Explore
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Public
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Update
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,13 +45,17 @@ fun ComposeExtensionScreen(
         val isExternal: Boolean = false,
     )
 
-    var selectedTab by remember(initialTab) { mutableStateOf(initialTab.coerceIn(0, 4)) }
+    var selectedTab by remember(initialTab) { mutableStateOf(initialTab.coerceIn(0, 8)) }
     val tabs = remember {
         listOf(
             ExtensionTabItem("Browse Plugins", Icons.Default.Explore),
             ExtensionTabItem("Installed", PremiumIcons.Extensions),
             ExtensionTabItem("Repositories", Icons.Default.Folder),
             ExtensionTabItem("Stremio Addons", Icons.Default.Public, isExternal = true),
+            ExtensionTabItem("Nuvio", Icons.Default.Code),
+            ExtensionTabItem("SkyStream", Icons.Default.CloudDownload),
+            ExtensionTabItem("Hiki", Icons.Default.Extension),
+            ExtensionTabItem("Anime", Icons.Default.Tv),
             ExtensionTabItem("Update History", Icons.Default.Update),
         )
     }
@@ -158,7 +168,7 @@ fun ComposeExtensionScreen(
             }
 
             // Sync All Action Button (Visible on CS3 tabs)
-            if (selectedTab != 3) {
+                        if (selectedTab == 0 || selectedTab == 1 || selectedTab == 2 || selectedTab == 8) {
                 FilledTonalButton(
                     onClick = {
                         if (!uiState.isSyncing) {
@@ -211,7 +221,11 @@ fun ComposeExtensionScreen(
                     1 -> InstalledTab(viewModel = viewModel, syncGeneration = syncGen)
                     2 -> RepositoriesTab(viewModel = viewModel)
                     3 -> SettingsAddons(viewModel = viewModel)
-                    4 -> UpdateHistoryTab(viewModel = viewModel)
+                    4 -> NuvioTab(viewModel = viewModel)
+                    5 -> SkyStreamTab(viewModel = viewModel)
+                    6 -> HikiTab(viewModel = viewModel)
+                    7 -> AniyomiTab(viewModel = viewModel)
+                    8 -> UpdateHistoryTab(viewModel = viewModel)
                 }
             }
         }

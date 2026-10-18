@@ -29,4 +29,9 @@ sealed interface ExtensionsUiEvent : UiEvent {
     data class OnSetStremioAddonEnabled(val manifestUrl: String, val enabled: Boolean) : ExtensionsUiEvent
     data class OnRefreshStremioAddon(val manifestUrl: String) : ExtensionsUiEvent
     data class OnMoveStremioAddon(val fromIndex: Int, val toIndex: Int) : ExtensionsUiEvent
+    data object OnRefreshSourceTabs : ExtensionsUiEvent
+    data class OnAddSourceRepo(val kind: String, val input: String) : ExtensionsUiEvent
+    data class OnRemoveSourceRepo(val kind: String, val url: String) : ExtensionsUiEvent
+    data class OnUninstallSourceItem(val kind: String, val id: String) : ExtensionsUiEvent
+    data class OnInstallSourceFile(val kind: String, val file: File) : ExtensionsUiEvent
 }

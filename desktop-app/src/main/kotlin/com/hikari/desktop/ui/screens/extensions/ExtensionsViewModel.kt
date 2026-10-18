@@ -15,6 +15,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.hikari.sources.aniyomi.AniyomiMainApi
+import com.hikari.sources.aniyomi.AniyomiManager
+import com.hikari.sources.hiki.HikiManager
+import com.hikari.sources.nuvio.NuvioMainApi
+import com.hikari.sources.nuvio.NuvioManager
+import com.hikari.sources.sky.SkyStreamMainApi
+import com.hikari.sources.sky.SkyStreamManager
+import com.lagradost.cloudstream3.APIHolder
+import com.hikari.desktop.ui.screens.extensions.contract.SourceRef
 
 data class LocalPlugin(
     val file: File,
@@ -62,6 +71,7 @@ class ExtensionsViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             loadPluginsFromManager()
             refreshInstalled()
+            refreshSourceTabs()
         }
         viewModelScope.launch(Dispatchers.IO) {
             com.hikari.common.storage.DesktopDataStore.pluginUpdatesFlow.collect {
@@ -95,7 +105,12 @@ class ExtensionsViewModel(
             is ExtensionsUiEvent.OnRemoveStremioAddon -> removeStremioAddon(event.manifestUrl)
             is ExtensionsUiEvent.OnSetStremioAddonEnabled -> setStremioAddonEnabled(event.manifestUrl, event.enabled)
             is ExtensionsUiEvent.OnRefreshStremioAddon -> refreshStremioAddon(event.manifestUrl)
-            is ExtensionsUiEvent.OnMoveStremioAddon -> moveStremioAddon(event.fromIndex, event.toIndex)
+                        is ExtensionsUiEvent.OnMoveStremioAddon -> moveStremioAddon(event.fromIndex, event.toIndex)
+            is ExtensionsUiEvent.OnRefreshSourceTabs -> refreshSourceTabs()
+            is ExtensionsUiEvent.OnAddSourceRepo -> addSourceRepo(event.kind, event.input)
+            is ExtensionsUiEvent.OnRemoveSourceRepo -> removeSourceRepo(event.kind, event.url)
+            is ExtensionsUiEvent.OnUninstallSourceItem -> uninstallSourceItem(event.kind, event.id)
+            is ExtensionsUiEvent.OnInstallSourceFile -> installSourceFile(event.kind, event.file)
         }
     }
 
@@ -520,6 +535,215 @@ class ExtensionsViewModel(
     private fun moveStremioAddon(fromIndex: Int, toIndex: Int) {
         viewModelScope.launch(Dispatchers.IO) {
             com.hikari.desktop.stremio.StremioAddonManager.moveAddon(fromIndex, toIndex)
+        }
+    }
+
+    private fun refreshSourceTabs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val nuvio = runCatching {
+                NuvioManager.installedScrapers().map { f -> SourceRef(f.absolutePath, NuvioManager.displayNameFor(f)) }
+            }.getOrDefault(emptyList())
+            val sky = runCatching {
+                SkyStreamManager.installedPlugins().map { d -> SourceRef(d.absolutePath, SkyStreamManager.displayNameFor(d)) }
+            }.getOrDefault(emptyList())
+            val hiki = runCatching {
+                HikiManager.installedFiles().map { f -> SourceRef(f.absolutePath, f.name) }
+            }.getOrDefault(emptyList())
+            val aniyomi = runCatching {
+                AniyomiManager.installedExts().flatMap { f ->
+                    AniyomiManager.labelsFor(f).mapIndexed { i, label -> SourceRef(f.absolutePath + "|" + i, label) }
+                }
+            }.getOrDefault(emptyList())
+            updateState {
+                copy(
+                    sourceItemsNuvio = nuvio,
+                    sourceItemsSky = sky,
+                    sourceItemsHiki = hiki,
+                    sourceItemsAniyomi = aniyomi,
+                    sourceReposNuvio = NuvioManager.repoUrls(),
+                    sourceReposSky = SkyStreamManager.repoUrls(),
+                    sourceReposAniyomi = AniyomiManager.repoUrls(),
+                )
+            }
+        }
+    }
+
+    private fun addSourceRepo(kind: String, input: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val text = input.trim()
+            if (text.isBlank()) {
+                updateState { copy(sourceTabStatus = "Paste a URL first.") }
+                return@launch
+            }
+            updateState { copy(sourceTabBusy = true, sourceTabStatus = "Installing...") }
+            try {
+                val result: Result<*> = when (kind) {
+                    "nuvio" -> if (text.endsWith(".js", ignoreCase = true)) {
+                        val bytes = NuvioManager.fetchBytes(text)
+                        if (bytes == null) Result.failure(Exception("Could not download the file"))
+                        else NuvioManager.installSingle(bytes, text.substringAfterLast('/'), text)
+                    } else {
+                        NuvioManager.installFromManifest(text)
+                    }
+                    "sky" -> if (text.endsWith(".sky", ignoreCase = true)) {
+                        val bytes = SkyStreamManager.fetchBytes(text)
+                        if (bytes == null) Result.failure(Exception("Could not download the file"))
+                        else SkyStreamManager.install(bytes, text)
+                    } else {
+                        val resolved = SkyStreamManager.resolveRepoUrl(text)
+                        if (resolved == null) Result.failure(Exception("Could not resolve the repository URL"))
+                        else SkyStreamManager.installFromManifest(resolved)
+                    }
+                    "hiki" -> {
+                        val bytes = runCatching {
+                            java.net.URL(text).openConnection().apply {
+                                connectTimeout = 20_000
+                                readTimeout = 45_000
+                            }.getInputStream().use { it.readBytes() }
+                        }.getOrNull()
+                        if (bytes == null) Result.failure(Exception("Could not download the file"))
+                        else HikiManager.install(bytes, null, text)
+                    }
+                    "aniyomi" -> if (text.endsWith(".apk", ignoreCase = true)) {
+                        val bytes = AniyomiManager.fetchBytes(text)
+                        if (bytes == null) Result.failure(Exception("Could not download the file"))
+                        else AniyomiManager.install(bytes, text)
+                    } else {
+                        val resolved = AniyomiManager.resolveRepoUrl(text)
+                        if (resolved == null) Result.failure(Exception("Could not resolve the repository URL"))
+                        else AniyomiManager.installFromManifest(resolved)
+                    }
+                    else -> Result.failure(Exception("Unknown source kind"))
+                }
+                result.onSuccess { count ->
+                    resyncSourceApis(kind)
+                    refreshSourceTabs()
+                    val label = if (count is Int) "$count item(s)" else "item(s)"
+                    updateState { copy(sourceTabStatus = "Installed $label.") }
+                }.onFailure { e ->
+                    updateState { copy(sourceTabStatus = e.message ?: "Install failed") }
+                }
+            } catch (e: Throwable) {
+                updateState { copy(sourceTabStatus = e.message ?: "Install failed") }
+            } finally {
+                updateState { copy(sourceTabBusy = false) }
+            }
+        }
+    }
+
+    private fun removeSourceRepo(kind: String, url: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            when (kind) {
+                "nuvio" -> NuvioManager.setRepoUrls(NuvioManager.repoUrls().filterNot { it == url })
+                "sky" -> SkyStreamManager.setRepoUrls(SkyStreamManager.repoUrls().filterNot { it == url })
+                "aniyomi" -> AniyomiManager.setRepoUrls(AniyomiManager.repoUrls().filterNot { it == url })
+            }
+            refreshSourceTabs()
+            updateState { copy(sourceTabStatus = "Repository removed.") }
+        }
+    }
+
+    private fun uninstallSourceItem(kind: String, id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            updateState { copy(sourceTabBusy = true) }
+            try {
+                val ok = when (kind) {
+                    "nuvio" -> NuvioManager.uninstall(java.io.File(id))
+                    "sky" -> SkyStreamManager.uninstall(java.io.File(id).name)
+                    "hiki" -> HikiManager.uninstall(java.io.File(id))
+                    "aniyomi" -> AniyomiManager.uninstall(java.io.File(id.substringBefore("|")))
+                    else -> false
+                }
+                resyncSourceApis(kind)
+                if (kind == "hiki") {
+                    refreshInstalled()
+                    pluginRepo.incrementSyncGeneration()
+                }
+                refreshSourceTabs()
+                updateState { copy(sourceTabStatus = if (ok) "Uninstalled." else "Nothing was removed.") }
+            } catch (e: Throwable) {
+                updateState { copy(sourceTabStatus = e.message ?: "Uninstall failed") }
+            } finally {
+                updateState { copy(sourceTabBusy = false) }
+            }
+        }
+    }
+
+    private fun installSourceFile(kind: String, file: java.io.File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            updateState { copy(sourceTabBusy = true, sourceTabStatus = "Installing...") }
+            try {
+                if (kind == "hiki") {
+                    onEvent(ExtensionsUiEvent.OnLoadLocalPlugin(file))
+                    refreshSourceTabs()
+                    updateState { copy(sourceTabStatus = "Installed '${file.name}'.") }
+                    return@launch
+                }
+                val bytes = runCatching { file.readBytes() }.getOrNull()
+                if (bytes == null || bytes.isEmpty()) {
+                    updateState { copy(sourceTabStatus = "Could not read the file") }
+                    return@launch
+                }
+                val result: Result<*> = when (kind) {
+                    "nuvio" -> NuvioManager.installSingle(bytes, file.name)
+                    "sky" -> SkyStreamManager.install(bytes, file.absolutePath)
+                    "aniyomi" -> AniyomiManager.install(bytes, file.absolutePath)
+                    else -> Result.failure(Exception("Unknown source kind"))
+                }
+                result.onSuccess {
+                    resyncSourceApis(kind)
+                    refreshSourceTabs()
+                    updateState { copy(sourceTabStatus = "Installed '${file.name}'.") }
+                }.onFailure { e ->
+                    updateState { copy(sourceTabStatus = e.message ?: "Install failed") }
+                }
+            } catch (e: Throwable) {
+                updateState { copy(sourceTabStatus = e.message ?: "Install failed") }
+            } finally {
+                updateState { copy(sourceTabBusy = false) }
+            }
+        }
+    }
+
+    private fun resyncSourceApis(kind: String) {
+        try {
+            synchronized(APIHolder.allProviders) {
+                when (kind) {
+                    "nuvio" -> {
+                        APIHolder.allProviders.removeAll { it is NuvioMainApi && it.sourcePlugin == "built-in" }
+                        for (f in NuvioManager.installedScrapers()) {
+                            val api = NuvioMainApi(f)
+                            api.sourcePlugin = "built-in"
+                            APIHolder.allProviders.add(api)
+                            APIHolder.addPluginMapping(api)
+                        }
+                    }
+                    "sky" -> {
+                        APIHolder.allProviders.removeAll { it is SkyStreamMainApi && it.sourcePlugin == "built-in" }
+                        for (d in SkyStreamManager.installedPlugins()) {
+                            val api = SkyStreamMainApi(d)
+                            api.sourcePlugin = "built-in"
+                            APIHolder.allProviders.add(api)
+                            APIHolder.addPluginMapping(api)
+                        }
+                    }
+                    "aniyomi" -> {
+                        APIHolder.allProviders.removeAll { it is AniyomiMainApi && it.sourcePlugin == "built-in" }
+                        for (f in AniyomiManager.installedExts()) {
+                            val n = AniyomiManager.sourceCountFor(f)
+                            for (i in 0 until n) {
+                                val api = AniyomiMainApi(f, i)
+                                api.sourcePlugin = "built-in"
+                                APIHolder.allProviders.add(api)
+                                APIHolder.addPluginMapping(api)
+                            }
+                        }
+                    }
+                }
+            }
+            runCatching { com.hikari.desktop.repo.ActiveProviderRepository.refreshProviders() }
+        } catch (e: Throwable) {
+            com.hikari.common.logging.AppLogger.e("Failed to resync source providers", e)
         }
     }
 }

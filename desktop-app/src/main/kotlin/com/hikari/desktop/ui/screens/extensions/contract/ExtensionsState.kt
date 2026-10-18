@@ -4,6 +4,8 @@ import com.hikari.desktop.repo.SitePlugin
 import com.hikari.desktop.ui.base.UiState
 import com.hikari.desktop.ui.screens.extensions.LocalPlugin
 
+data class SourceRef(val id: String, val name: String)
+
 data class ExtensionsUiState(
     val isFetching: Boolean = false,
     val isUninstalling: Boolean = false,
@@ -21,4 +23,13 @@ data class ExtensionsUiState(
     val installingPlugins: Set<String> = emptySet(),
     val isDialogInstalling: Boolean = false,
     val updatesHistory: List<com.hikari.common.storage.PluginUpdateRecord> = emptyList(),
+    val sourceItemsNuvio: List<SourceRef> = emptyList(),
+    val sourceItemsSky: List<SourceRef> = emptyList(),
+    val sourceItemsHiki: List<SourceRef> = emptyList(),
+    val sourceItemsAniyomi: List<SourceRef> = emptyList(),
+    val sourceReposNuvio: List<String> = emptyList(),
+    val sourceReposSky: List<String> = emptyList(),
+    val sourceReposAniyomi: List<String> = emptyList(),
+    val sourceTabStatus: String = "",
+    val sourceTabBusy: Boolean = false,
 ) : UiState
