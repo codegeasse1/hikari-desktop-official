@@ -19,12 +19,12 @@ jobs:
         submodules: recursive
         fetch-depth: 0
 
-    - name: Verify Tag is on Release Branch
+    - name: Verify tag is on main
       shell: bash
       run: |
-        git fetch origin work
-        if ! git branch -r --contains ${{ github.sha }} | grep -q 'origin/work'; then
-          echo "❌ Error: Release tags must be on work branch! Aborting release."
+        git fetch origin main
+        if ! git branch -r --contains ${{ github.sha }} | grep -q 'origin/main'; then
+          echo "❌ Error: Release tags must be on the main branch! Aborting release."
           exit 1
         fi
 
@@ -72,6 +72,52 @@ jobs:
         VERSION=${GITHUB_REF_NAME#v}
         ./gradlew :desktop-app:createDistributable -PAPP_VERSION=$VERSION --no-daemon
 
+    - name: Stamp installer version (higher AppVersion = upgrade, not side-by-side)
+      shell: bash
+      run: |
+        # Inno installs OVER the previous version only when the AppId is stable
+        # (installer/setup.iss, never change it) AND AppVersion increases.
+        # Strip any -suffix from the tag: Inno/jpackage need a plain number.
+        VERSION=${GITHUB_REF_NAME#v}
+        INNO_VER=${VERSION%%-*}
+        echo "#define AppVersion \"$INNO_VER\"" > installer/version.iss
+        cat installer/version.iss
+
+    - name: Sign app executable (so the installed exe is already signed)
+      shell: pwsh
+      env:
+        CERT_B64: ${{ secrets.WINDOWS_SIGNING_CERT }}
+        CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      run: |
+        if ([string]::IsNullOrEmpty($env:CERT_B64)) {
+          Write-Error "WINDOWS_SIGNING_CERT secret is empty. Set it to the base64 of your code-signing .pfx."
+          exit 1
+        }
+        try {
+          [IO.File]::WriteAllBytes("signing.pfx", [Convert]::FromBase64String($env:CERT_B64))
+        } catch {
+          [IO.File]::WriteAllText("signing.pfx", $env:CERT_B64)
+        }
+        $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($null -eq $signtool) {
+          Write-Error "signtool.exe not found. The Windows SDK should be preinstalled on this runner."
+          exit 1
+        }
+        Write-Host "Using signtool: $($signtool.FullName)"
+        $file = "desktop-app\build\compose\binaries\main\app\Hikari-Desktop\Hikari-Desktop.exe"
+        if (-not (Test-Path $file)) {
+          Write-Error "App exe not found at $file. The Compose output layout may have changed."
+          exit 1
+        }
+        $signArgs = @("sign", "/f", "signing.pfx", "/d", "Hikari", "/du", "https://github.com/codegeasse1/hikari-desktop-official", "/fd", "SHA256", "/tr", "http://timestamp.digicert.com", "/td", "SHA256")
+        if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
+        $signArgs += $file
+        & $signtool.FullName @signArgs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & $signtool.FullName verify /a /v $file
+        Remove-Item signing.pfx -Force
+
     - name: Install Inno Setup
       run: choco install innosetup --yes
 
@@ -81,10 +127,45 @@ jobs:
         $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
         & $iscc "installer\setup.iss"
 
+    - name: Sign installer (SmartScreen trusts a signed installer)
+      shell: pwsh
+      env:
+        CERT_B64: ${{ secrets.WINDOWS_SIGNING_CERT }}
+        CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      run: |
+        if ([string]::IsNullOrEmpty($env:CERT_B64)) {
+          Write-Error "WINDOWS_SIGNING_CERT secret is empty. Set it to the base64 of your code-signing .pfx."
+          exit 1
+        }
+        try {
+          [IO.File]::WriteAllBytes("signing.pfx", [Convert]::FromBase64String($env:CERT_B64))
+        } catch {
+          [IO.File]::WriteAllText("signing.pfx", $env:CERT_B64)
+        }
+        $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue |
+          Where-Object { $_.FullName -match '\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($null -eq $signtool) {
+          Write-Error "signtool.exe not found. The Windows SDK should be preinstalled on this runner."
+          exit 1
+        }
+        Write-Host "Using signtool: $($signtool.FullName)"
+        $file = "desktop-app\build\outputs\Hikari-Setup.exe"
+        if (-not (Test-Path $file)) {
+          Write-Error "Installer not found at $file. Check OutputDir/OutputBaseFilename in installer/setup.iss."
+          exit 1
+        }
+        $signArgs = @("sign", "/f", "signing.pfx", "/d", "Hikari", "/du", "https://github.com/codegeasse1/hikari-desktop-official", "/fd", "SHA256", "/tr", "http://timestamp.digicert.com", "/td", "SHA256")
+        if (-not [string]::IsNullOrEmpty($env:CERT_PASSWORD)) { $signArgs += @("/p", $env:CERT_PASSWORD) }
+        $signArgs += $file
+        & $signtool.FullName @signArgs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+        & $signtool.FullName verify /a /v $file
+        Remove-Item signing.pfx -Force
+
     - name: Publish Release
       uses: softprops/action-gh-release@v2
       with:
-        files: desktop-app/build/outputs/CloudStream-Setup.exe
+        files: desktop-app/build/outputs/Hikari-Setup.exe
         generate_release_notes: true
         prerelease: false
         make_latest: true

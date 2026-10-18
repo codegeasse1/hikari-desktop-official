@@ -10,6 +10,7 @@ AppUpdatesURL=https://github.com/codegeasse1/hikari-desktop-official
 DefaultDirName={autopf}\Hikari
 DefaultGroupName=Hikari
 AllowNoIcons=yes
+UsePreviousAppDir=yes
 SetupIconFile=..\desktop-app\src\main\resources\app_icon.ico
 UninstallDisplayIcon={app}\Hikari-Desktop.exe
 ; Output directory for the compiled installer
