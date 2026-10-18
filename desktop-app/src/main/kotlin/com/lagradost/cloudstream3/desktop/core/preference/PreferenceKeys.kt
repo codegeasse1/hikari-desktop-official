@@ -12,6 +12,9 @@ object PreferenceKeys {
     const val PREF_SELECTED_PROVIDER = "preferred_provider_name"
     const val LAST_PLUGIN_SYNC_TIMESTAMP = "last_plugin_sync_timestamp"
 
+    // Hikari sources
+    const val PREF_IPTV_PLAYLIST_URL = "hikari_iptv_playlist_url"
+
     // Search
     const val PREF_SEARCH_HISTORY = "search_history"
 

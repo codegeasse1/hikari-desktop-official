@@ -11,6 +11,8 @@ import com.lagradost.cloudstream3.metaproviders.TraktProvider
 import com.lagradost.common.logging.AppLogger
 import com.lagradost.common.platform.PlatformPaths
 import com.lagradost.runtime.loader.ExtensionLoader
+import com.hikari.sources.iptv.IptvMainApi
+import com.lagradost.cloudstream3.desktop.core.preference.PreferenceKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
@@ -23,7 +25,7 @@ fun initProviders() {
         TraktProvider(),
         CrossTmdbProvider(),
         StremioApi(),
-    )
+    ) + hikariBuiltIns()
     synchronized(APIHolder.allProviders) {
         builtIns.forEach { provider ->
             provider.sourcePlugin = "built-in"
@@ -32,6 +34,21 @@ fun initProviders() {
         }
     }
     AppLogger.i("Registered ${builtIns.size} built-in meta-providers")
+}
+
+/**
+ * Hikari sources beyond CloudStream plugins: each is a MainAPI so Home,
+ * Search, Details and the Player pick it up with no UI changes. A source is
+ * registered only when it is configured (e.g. an IPTV playlist URL is set).
+ */
+fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
+    val out = mutableListOf<com.lagradost.cloudstream3.MainAPI>()
+    runCatching {
+        val iptvUrl = com.lagradost.common.storage.DesktopDataStore
+            .getKey<String>(PreferenceKeys.PREF_IPTV_PLAYLIST_URL).orEmpty().trim()
+        if (iptvUrl.isNotBlank()) out.add(IptvMainApi(iptvUrl))
+    }
+    return out
 }
 
 private val isPluginsInitialized = java.util.concurrent.atomic.AtomicBoolean(false)
