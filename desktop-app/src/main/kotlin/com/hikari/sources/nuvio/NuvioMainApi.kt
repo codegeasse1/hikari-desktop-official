@@ -122,7 +122,7 @@ class NuvioMainApi(
             this.year = year
             this.plot = plot
             this.tags = genres
-            this.backdropUrl(backdrop)
+            backgroundPosterUrl = backdrop
         }
     }
 

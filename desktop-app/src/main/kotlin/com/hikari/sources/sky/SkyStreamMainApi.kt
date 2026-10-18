@@ -110,7 +110,7 @@ class SkyStreamMainApi(
     }
 
     private fun toSearchResponse(o: JSONObject): SearchResponse? {
-        val item = toItem(o) ?: return null
+        val item = toItem(packageName, o) ?: return null
         return if (item.isTv) {
             newTvSeriesSearchResponse(item.title, item.url, TvType.TvSeries, fix = false) {
                 posterUrl = item.poster
@@ -177,7 +177,6 @@ class SkyStreamMainApi(
                 backgroundPosterUrl = backdrop
             }
         } else {
-            seedInstant(d, token.token)
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 posterUrl = poster
                 this.year = year
@@ -204,7 +203,7 @@ class SkyStreamMainApi(
                 is JSONObject -> v.optJSONArray("streams") ?: v.optJSONArray("sources")
                 else -> null
             } ?: return false
-            val mapped = mapStreams(arr)
+            val mapped = mapStreams(packageName, displayName, arr)
             if (mapped.isEmpty()) return false
             instantStreams[token.token] = mapped
             mapped
@@ -396,10 +395,10 @@ class SkyStreamMainApi(
             base64Text(b64)?.let { runCatching { JSONObject(it) }.getOrNull() }
 
         internal fun normalizeDriveUrl(url: String): String {
-            val u = url.trim().trim('"', '\\'')
+            val u = url.trim().trim('"', '\'')
             if (u.isBlank()) return u
-            val id = Regex("""drive\\.google\\.com/(?:uc|open)\\?(?:.*&)?id=([^&\\s"']+)""").find(u)?.groupValues?.get(1)
-                ?: Regex("""drive\\.google\\.com/file/d/([^/\\s"']+)""").find(u)?.groupValues?.get(1)
+            val id = Regex("""drive\.google\\.com/(?:uc|open)\?(?:.*&)?id=([^&\s"']+)""").find(u)?.groupValues?.get(1)
+                ?: Regex("""drive\.google\\.com/file/d/([^/\s"']+)""").find(u)?.groupValues?.get(1)
             return if (id != null) "https://drive.usercontent.google.com/download?id=" + id + "&export=download&confirm=t" else u
         }
     }
