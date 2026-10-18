@@ -4,10 +4,10 @@ import android.content.Context
 import android.content.DesktopContextProvider
 import java.lang.ref.WeakReference
 
-/** Minimal stub of HikariApp used by some plugins. Provides access to a global context
+/** Minimal stub of CloudStreamApp used by some plugins. Provides access to a global context
  * and helpers for storing simple keys in SharedPreferences. This is intentionally minimal
  * and may be expanded if plugins require more functionality. */
-class HikariApp {
+class CloudStreamApp {
     companion object {
         private var _context: WeakReference<Context>? = null
         var context: Context?
