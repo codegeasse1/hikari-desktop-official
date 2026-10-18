@@ -12,6 +12,7 @@ import com.lagradost.common.logging.AppLogger
 import com.lagradost.common.platform.PlatformPaths
 import com.lagradost.runtime.loader.ExtensionLoader
 import com.hikari.sources.iptv.IptvMainApi
+import com.hikari.sources.stremio.StremioAddonApi
 import com.lagradost.cloudstream3.desktop.core.preference.PreferenceKeys
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -47,6 +48,15 @@ fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
         val iptvUrl = com.lagradost.common.storage.DesktopDataStore
             .getKey<String>(PreferenceKeys.PREF_IPTV_PLAYLIST_URL).orEmpty().trim()
         if (iptvUrl.isNotBlank()) out.add(IptvMainApi(iptvUrl))
+        runCatching {
+            val addons = com.lagradost.common.storage.DesktopDataStore
+                .getKey<List<String>>(PreferenceKeys.PREF_STREMIO_ADDON_URLS) ?: emptyList()
+            for (raw in addons) {
+                val u = raw.trim().trimEnd('/')
+                if (u.isBlank()) continue
+                out.add(StremioAddonApi(u))
+            }
+        }
     }
     return out
 }

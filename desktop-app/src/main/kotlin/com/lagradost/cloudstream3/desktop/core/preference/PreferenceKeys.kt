@@ -14,6 +14,7 @@ object PreferenceKeys {
 
     // Hikari sources
     const val PREF_IPTV_PLAYLIST_URL = "hikari_iptv_playlist_url"
+    const val PREF_STREMIO_ADDON_URLS = "hikari_stremio_addon_urls"
 
     // Search
     const val PREF_SEARCH_HISTORY = "search_history"
