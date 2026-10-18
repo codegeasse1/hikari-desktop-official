@@ -1,7 +1,7 @@
 package android.widget;
 
 import android.content.Context;
-import com.lagradost.cloudstream3.desktop.shadowui.ShadowUi;
+import com.hikari.desktop.shadowui.ShadowUi;
 
 @android.annotation.Stub
 public class EditText extends TextView {

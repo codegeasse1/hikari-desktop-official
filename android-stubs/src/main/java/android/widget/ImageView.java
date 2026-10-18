@@ -3,7 +3,7 @@ package android.widget;
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.view.View;
-import com.lagradost.cloudstream3.desktop.shadowui.ShadowUi;
+import com.hikari.desktop.shadowui.ShadowUi;
 
 @android.annotation.Stub
 public class ImageView extends View {

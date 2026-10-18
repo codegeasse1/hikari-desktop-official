@@ -1,6 +1,6 @@
 package android.content;
 
-import com.lagradost.common.storage.DesktopDataStore;
+import com.hikari.common.storage.DesktopDataStore;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -44,13 +44,13 @@ class DesktopSharedPreferences implements SharedPreferences {
 
     public DesktopSharedPreferences(String name) {
         this.prefName = name + "_";
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.registerPrefName(this.prefName);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.registerPrefName(this.prefName);
     }
 
     private String getActualPref() {
         String callingPlugin = null;
         try {
-            Class<?> clazz = Class.forName("com.lagradost.runtime.loader.ExtensionLoader");
+            Class<?> clazz = Class.forName("com.hikari.runtime.loader.ExtensionLoader");
             java.lang.reflect.Field field = clazz.getField("INSTANCE");
             Object instance = field.get(null);
             java.lang.reflect.Method method = clazz.getMethod("getCallingPluginName");
@@ -75,14 +75,14 @@ class DesktopSharedPreferences implements SharedPreferences {
 
     @Override
     public String getString(String key, String defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "String", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "String", defValue, false);
         String val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), String.class);
         return val != null ? val : defValue;
     }
 
     @Override
     public int getInt(String key, int defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Int", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Int", defValue, false);
         Integer val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), Integer.class);
         String lower = key != null ? key.toLowerCase() : "";
         if (lower.contains("concurrency") || lower.contains("threads") || lower.contains("parallel")) {
@@ -99,21 +99,21 @@ class DesktopSharedPreferences implements SharedPreferences {
 
     @Override
     public long getLong(String key, long defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Long", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Long", defValue, false);
         Long val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), Long.class);
         return val != null ? val : defValue;
     }
 
     @Override
     public float getFloat(String key, float defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Float", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Float", defValue, false);
         Float val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), Float.class);
         return val != null ? val : defValue;
     }
 
     @Override
     public boolean getBoolean(String key, boolean defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Boolean", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Boolean", defValue, false);
         Boolean val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), Boolean.class);
         return val != null ? val : defValue;
     }
@@ -121,15 +121,15 @@ class DesktopSharedPreferences implements SharedPreferences {
     @SuppressWarnings("unchecked")
     @Override
     public Set<String> getStringSet(String key, Set<String> defValue) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "StringSet", defValue, false);
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "StringSet", defValue, false);
         Set val = DesktopDataStore.INSTANCE.getKey(getFullKey(key), Set.class);
         return val != null ? (Set<String>) val : defValue;
     }
 
     @Override
     public boolean contains(String key) {
-        com.lagradost.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Boolean", true, false);
-        return com.lagradost.common.storage.DesktopDataStore.INSTANCE.containsKey(getFullKey(key));
+        com.hikari.common.storage.PluginSettingsSchemaRegistry.INSTANCE.register(getActualPref(), key, "Boolean", true, false);
+        return com.hikari.common.storage.DesktopDataStore.INSTANCE.containsKey(getFullKey(key));
     }
 
     @Override
@@ -209,7 +209,7 @@ class DesktopSharedPreferences implements SharedPreferences {
                 String prefix = getActualPref();
                 // Collect all keys from datastore that belong to this preference namespace and remove them
                 try {
-                    java.util.List<String> toDelete = com.lagradost.common.storage.DesktopDataStore.INSTANCE.getAllKeysWithPrefix(prefix);
+                    java.util.List<String> toDelete = com.hikari.common.storage.DesktopDataStore.INSTANCE.getAllKeysWithPrefix(prefix);
                     for (String k : toDelete) {
                         DesktopDataStore.INSTANCE.removeKey(k);
                     }

@@ -3,7 +3,7 @@ package android.view;
 import android.content.Context;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
-import com.lagradost.cloudstream3.desktop.shadowui.ShadowUi;
+import com.hikari.desktop.shadowui.ShadowUi;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @android.annotation.Stub

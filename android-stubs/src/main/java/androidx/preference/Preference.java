@@ -2,7 +2,7 @@ package androidx.preference;
 
 import android.content.Context;
 import android.util.AttributeSet;
-import com.lagradost.common.storage.PluginSettingsSchemaRegistry;
+import com.hikari.common.storage.PluginSettingsSchemaRegistry;
 
 @android.annotation.Implemented
 public class Preference {

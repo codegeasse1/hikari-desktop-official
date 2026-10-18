@@ -36,7 +36,7 @@ public abstract class PreferenceFragmentCompat extends Fragment {
     
     public void setPreferencesFromResource(int preferencesResId, String key) {
         try {
-            Class<?> extLoader = Class.forName("com.lagradost.runtime.loader.ExtensionLoader");
+            Class<?> extLoader = Class.forName("com.hikari.runtime.loader.ExtensionLoader");
             java.lang.reflect.Method method = extLoader.getMethod("parsePluginPreferences", Object.class, int.class);
             method.invoke(null, this, preferencesResId);
         } catch(Exception e) {

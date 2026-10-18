@@ -1,6 +1,6 @@
 package android.util;
 
-import com.lagradost.common.logging.AppLogger;
+import com.hikari.common.logging.AppLogger;
 
 @android.annotation.Implemented
 public final class Log {

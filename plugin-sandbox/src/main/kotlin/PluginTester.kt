@@ -53,16 +53,16 @@ fun main(args: Array<String>) {
         println("Initializing Desktop Environment...")
 
         // Proxy Server
-        com.lagradost.player.impl.proxy.LocalStreamProxy.start()
+        com.hikari.player.impl.proxy.LocalStreamProxy.start()
 
         // Security Providers
         java.security.Security.insertProviderAt(org.bouncycastle.jce.provider.BouncyCastleProvider(), 1)
 
         // DataStore
-        com.lagradost.common.storage.DesktopDataStore.init()
+        com.hikari.common.storage.DesktopDataStore.init()
 
         // Global NiceHttp clients
-        com.lagradost.cloudstream3.desktop.network.NetworkConfig.updateGlobalNetworkClients()
+        com.hikari.desktop.network.NetworkConfig.updateGlobalNetworkClients()
 
         // Patch Jackson mapper for dex2jar Kotlin reflection bugs
         val mapper = com.lagradost.cloudstream3.mapper
@@ -120,14 +120,14 @@ fun main(args: Array<String>) {
         // Initialize WebViewResolver
         /*
         com.lagradost.cloudstream3.network.WebViewResolver.webViewHandler = { request, callback ->
-            com.lagradost.cloudstream3.desktop.network.CdpResolverImpl.resolve(request, callback)
+            com.hikari.desktop.network.CdpResolverImpl.resolve(request, callback)
         }
          */
 
         try {
             // Load Plugin Safely (using ExtensionLoader to trigger StaticVerifier)
             println("Loading and Verifying Plugin via ExtensionLoader...")
-            val pluginClassName = com.lagradost.runtime.loader.ExtensionLoader.loadAndInit(jarFile)
+            val pluginClassName = com.hikari.runtime.loader.ExtensionLoader.loadAndInit(jarFile)
 
             if (pluginClassName != null) {
                 finalReport.append("Found and Verified plugin class: $pluginClassName\n")
