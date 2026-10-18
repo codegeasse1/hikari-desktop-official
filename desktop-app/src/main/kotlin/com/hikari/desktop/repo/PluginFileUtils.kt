@@ -182,7 +182,7 @@ internal object PluginFileUtils {
         val repoDir = File(getExtensionsDir(), repoName.replace(Regex("[^a-zA-Z0-9.-]"), "_"))
         if (repoDir.exists()) {
             // Must explicitly unload all plugins from this repo first to release Windows file locks
-            val jars = repoDir.listFiles { f -> f.isFile && (f.extension == "jar" || f.extension == "cs3") }
+            val jars = repoDir.listFiles { f -> f.isFile && (f.extension == "jar" || f.extension == "cs3" || f.extension == "hiki") }
             jars?.forEach { jar ->
                 com.hikari.runtime.loader.ExtensionLoader.unloadPlugin(jar.absolutePath)
             }

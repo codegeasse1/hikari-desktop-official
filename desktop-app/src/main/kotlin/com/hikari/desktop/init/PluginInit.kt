@@ -11,6 +11,8 @@ import com.lagradost.cloudstream3.metaproviders.TraktProvider
 import com.hikari.common.logging.AppLogger
 import com.hikari.common.platform.PlatformPaths
 import com.hikari.runtime.loader.ExtensionLoader
+import com.hikari.sources.hiki.HikiMainApi
+import com.hikari.ext.providers.YtsProvider
 import com.hikari.sources.iptv.IptvMainApi
 import com.hikari.sources.stremio.StremioAddonApi
 import kotlinx.coroutines.Dispatchers
@@ -55,6 +57,11 @@ fun hikariBuiltIns(): List<com.lagradost.cloudstream3.MainAPI> {
                 if (u.isBlank()) continue
                 out.add(StremioAddonApi(u))
             }
+        }
+        runCatching {
+            val hikiEnabled = com.hikari.common.storage.DesktopDataStore
+                .getKey<Boolean>(PreferenceKeys.PREF_HIKI_ENABLED) ?: true
+            if (hikiEnabled) out.add(HikiMainApi(YtsProvider()))
         }
     }
     return out
@@ -103,7 +110,7 @@ private fun loadInstalledPlugins() {
     }
 
     val jarFiles = extensionsDir.walkTopDown()
-        .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3") }
+        .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3" || it.extension == "hiki") }
         .filter { !it.name.endsWith("-jvm.jar") }
         .sortedBy { it.lastModified() }
         .toList()

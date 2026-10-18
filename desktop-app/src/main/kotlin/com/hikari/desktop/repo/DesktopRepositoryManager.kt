@@ -360,7 +360,7 @@ object DesktopRepositoryManager {
 
         val allRemote = getAllPlugins()
         val localJars = extensionsDir.walkTopDown()
-            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3") }
+            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3" || it.extension == "hiki") }
             .filter { !it.name.endsWith("-jvm.jar") }
             .toList()
 
@@ -421,7 +421,7 @@ object DesktopRepositoryManager {
         val extensionsDir = getExtensionsDir()
         if (!extensionsDir.exists()) return icons
         extensionsDir.walkTopDown()
-            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3") }
+            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3" || it.extension == "hiki") }
             .filter { !it.name.endsWith("-jvm.jar") }
             .forEach { jar ->
                 val manifest = readPluginManifest(jar) ?: return@forEach
@@ -550,6 +550,7 @@ object DesktopRepositoryManager {
                     remotePlugins.forEach { remotePlugin ->
                         val localJar = File(repoDir, "${remotePlugin.internalName}.jar").takeIf { it.exists() }
                             ?: File(repoDir, "${remotePlugin.internalName}.cs3").takeIf { it.exists() }
+                            ?: File(repoDir, "${remotePlugin.internalName}.hiki").takeIf { it.exists() }
                             ?: File(repoDir, "${remotePlugin.internalName}-jvm.jar").takeIf { it.exists() }
                         if (localJar != null && localJar.exists()) {
                             val localManifest = readPluginManifest(localJar)

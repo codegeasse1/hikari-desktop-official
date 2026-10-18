@@ -192,7 +192,7 @@ class ExtensionsViewModel(
         val savedRepos = getPluginRepositories.get()
         if (extensionsDir.exists()) {
             extensionsDir.walkTopDown()
-                .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3") }
+                .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3" || it.extension == "hiki") }
                 .filter {
                     !it.name.endsWith("-jvm.jar") &&
                     !it.name.contains("-secure") &&

@@ -449,7 +449,7 @@ object ExtensionLoader {
 
         fun addKey(k: String?) {
             if (k.isNullOrBlank()) return
-            val clean = k.removeSuffix(".jar").removeSuffix(".cs3").removeSuffix("-jvm").removeSuffix("-secure").lowercase().trim()
+            val clean = k.removeSuffix(".jar").removeSuffix(".cs3").removeSuffix(".hiki").removeSuffix("-jvm").removeSuffix("-secure").lowercase().trim()
             if (clean.isNotBlank()) {
                 keys.add(clean)
                 val stripped = clean.removeSuffix("provider").removeSuffix("plugin").removePrefix("com.")
@@ -720,7 +720,7 @@ object ExtensionLoader {
 
         var loaded = 0
         extensionsDir.walkTopDown()
-            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3") }
+            .filter { it.isFile && (it.extension == "jar" || it.extension == "cs3" || it.extension == "hiki") }
             .filter { !it.name.endsWith("-jvm.jar") }
             .sortedBy { it.lastModified() }
             .forEach { jar ->

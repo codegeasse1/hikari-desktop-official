@@ -13,6 +13,7 @@ object PreferenceKeys {
     const val LAST_PLUGIN_SYNC_TIMESTAMP = "last_plugin_sync_timestamp"
 
     // Hikari sources
+    const val PREF_HIKI_ENABLED = "hikari_hiki_enabled"
     const val PREF_IPTV_PLAYLIST_URL = "hikari_iptv_playlist_url"
     const val PREF_STREMIO_ADDON_URLS = "hikari_stremio_addon_urls"
 
