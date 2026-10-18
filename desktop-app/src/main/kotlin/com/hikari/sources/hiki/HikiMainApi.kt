@@ -109,12 +109,7 @@ class HikiMainApi(
         return if (full.type == HikariMediaType.SERIES) {
             val episodes = runCatching { provider.getEpisodes(full) }.getOrNull().orEmpty()
             val eps: List<Episode> = episodes.map { e ->
-                newEpisode(episodeRef(full, e), fix = false) {
-                    name = e.name
-                    season = e.season
-                    episode = e.number
-                    posterUrl = e.image
-                }
+                newEpisode(episodeRef(full, e), { name = e.name; season = e.season; episode = e.number; posterUrl = e.image }, false)
             }
             newTvSeriesLoadResponse(full.title, url, TvType.TvSeries, eps) {
                 posterUrl = full.posterUrl

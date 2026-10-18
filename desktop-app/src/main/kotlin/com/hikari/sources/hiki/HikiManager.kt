@@ -109,7 +109,7 @@ object HikiManager {
     suspend fun uninstall(file: File): Boolean = withContext(Dispatchers.IO) {
         if (!file.exists() || !file.isFile) return@withContext false
         runCatching { ExtensionLoader.unloadPlugin(file.absolutePath) }
-        runCatching { ExtensionLoader.removeTrusted(file) } catch (_: Throwable) { }
+        runCatching { ExtensionLoader.removeTrusted(file) }
         @Suppress("ExplicitGarbageCollectionCall")
         System.gc()
         val stem = file.nameWithoutExtension
