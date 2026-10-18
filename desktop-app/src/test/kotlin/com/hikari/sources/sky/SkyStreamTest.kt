@@ -67,7 +67,7 @@ class SkyStreamMainApiTest {
         val mapped = mapStreams("p", "Disp", arr)
         assertEquals(1, mapped.size)
         assertEquals("CDN 1080p", mapped[0].name)
-        assertEquals(SkyStreamMainApi.StreamKind.VIDEO, mapped[0].kind)
+        assertEquals(SkyStreamMainApi.Companion.StreamKind.VIDEO, mapped[0].kind)
         assertTrue(mapped[0].headers["User-Agent"]?.contains("Chrome") == true)
     }
 

@@ -41,21 +41,21 @@ class NuvioMainApiTest {
         val b = rowsFor("moviebox", listOf("moviebox", "vixsrc"))
         assertEquals(5, a.size)
         assertTrue(a.map { it.id } != b.map { it.id })
-        assertEquals(NuvioMainApi.Niche.GENERAL, nicheOf("vixsrc"))
-        assertEquals(NuvioMainApi.Niche.ANIME, nicheOf("hianime-to"))
-        assertEquals(NuvioMainApi.Niche.HINDI, nicheOf("vegamovies-nuvio"))
+        assertEquals(NuvioMainApi.Companion.Niche.GENERAL, nicheOf("vixsrc"))
+        assertEquals(NuvioMainApi.Companion.Niche.ANIME, nicheOf("hianime-to"))
+        assertEquals(NuvioMainApi.Companion.Niche.HINDI, nicheOf("vegamovies-nuvio"))
     }
 
     @Test
     fun streamRowMapping() {
         val magnet = mapStreamRow(JSONObject().put("name", "Vix").put("url", "magnet:?xt=urn:btih:abc123").put("quality", "1080p"), "vixsrc")
         assertNotNull(magnet)
-        assertEquals(NuvioMainApi.StreamKind.TORRENT, magnet.kind)
+        assertEquals(NuvioMainApi.Companion.StreamKind.TORRENT, magnet.kind)
         assertEquals("Vix 1080p", magnet.name)
         assertTrue(magnet.headers["User-Agent"]?.contains("Chrome") == true)
         val nested = mapStreamRow(JSONObject().put("url", JSONObject().put("url", "https://cdn.test/v.m3u8").put("headers", JSONObject().put("Referer", "https://x.test/"))), "p")
         assertNotNull(nested)
-        assertEquals(NuvioMainApi.StreamKind.M3U8, nested.kind)
+        assertEquals(NuvioMainApi.Companion.StreamKind.M3U8, nested.kind)
         assertEquals("https://x.test/", nested.headers["Referer"])
         assertNull(mapStreamRow(JSONObject().put("url", "http://www.w3.org/2000/svg"), "p"))
         assertNull(mapStreamRow(JSONObject(), "p"))
