@@ -194,12 +194,12 @@ class StremioAddonApi(
                     val season = v.optInt("season", 1)
                     if (ep < 0 || !seen.add("$season:$ep")) continue
                     val vid = v.optString("id").ifBlank { "$id:$season:$ep" }
-                    episodes += this@StremioAddonApi.newEpisode(encId(type, vid), fix = false) {
+                    episodes += this@StremioAddonApi.newEpisode(encId(type, vid), fix = false, initializer = {
                         name = v.optString("title").ifBlank { "Episode $ep" }
                         this.season = season
                         this.episode = ep
                         posterUrl = v.optString("thumbnail").ifBlank { null }
-                    }
+                    })
                 }
             }
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes.sortedBy { it.episode ?: 0 }) {
