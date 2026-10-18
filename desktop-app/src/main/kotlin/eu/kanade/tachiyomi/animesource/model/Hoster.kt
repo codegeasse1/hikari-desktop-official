@@ -81,6 +81,7 @@ data class SerializableHoster(
     companion object {
         fun List<Hoster>.serialize(): String =
             Json.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(SerializableHoster.serializer()),
                 this.map { host ->
                     SerializableHoster(
                         host.hosterUrl,

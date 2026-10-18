@@ -103,6 +103,7 @@ dependencies {
     implementation(libs.javet)
     implementation(libs.javet.v8.windows)
     implementation(libs.rxjava)
+    implementation(libs.nanohttpd)
     implementation(libs.okhttp.logging)
     implementation(libs.jsoup)
     val dex2jarLibs = fileTree("libs/dex2jar") { include("*.jar") }

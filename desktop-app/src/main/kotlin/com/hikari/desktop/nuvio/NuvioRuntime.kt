@@ -446,7 +446,7 @@ object NuvioRuntime {
     /** True when the JS module loads and exports a usable getStreams function.
      *  Must start with "OK"; "ERR:..." carries a detail message; anything else
      *  means "not a valid nuvio provider". */
-    suspend fun validate(context: Context, source: String): String =
+    suspend fun validate(source: String): String =
         withContext(Dispatchers.Default) {
             val qjs = JsRuntime.create()
             qjs.evaluationTimeoutMillis = VALIDATE_TIMEOUT_MS

@@ -212,6 +212,7 @@ data class SerializableVideo(
     companion object {
         fun List<Video>.serialize(): String =
             Json.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(SerializableVideo.serializer()),
                 this.map { vid ->
                     SerializableVideo(
                         vid.videoUrl,
