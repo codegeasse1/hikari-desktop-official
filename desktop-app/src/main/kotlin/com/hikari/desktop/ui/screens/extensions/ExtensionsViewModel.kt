@@ -613,7 +613,7 @@ class ExtensionsViewModel(
                         if (resolved == null) Result.failure(Exception("Could not resolve the repository URL"))
                         else AniyomiManager.installFromManifest(resolved)
                     }
-                    else -> Result.failure(Exception("Unknown source kind"))
+                    else -> Result.failure<Any>(Exception("Unknown source kind"))
                 }
                 result.onSuccess { count ->
                     resyncSourceApis(kind)
@@ -688,7 +688,7 @@ class ExtensionsViewModel(
                     "nuvio" -> NuvioManager.installSingle(bytes, file.name)
                     "sky" -> SkyStreamManager.install(bytes, file.absolutePath)
                     "aniyomi" -> AniyomiManager.install(bytes, file.absolutePath)
-                    else -> Result.failure(Exception("Unknown source kind"))
+                    else -> Result.failure<Any>(Exception("Unknown source kind"))
                 }
                 result.onSuccess {
                     resyncSourceApis(kind)
