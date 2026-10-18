@@ -1,0 +1,6801 @@
+    // Bridge: JS -> Kotlin
+    // Use window.send so inline onclick="send(...)" attributes can call it
+    window.send = (type, value) => {
+        const payload = { type, value: value === undefined ? '' : String(value) };
+        const bridge = window.chrome && window.chrome.webview;
+        if (bridge) bridge.postMessage(payload);
+        else console.log('[JS→Kotlin]', payload);
+    };
+    const send = window.send; // local alias for script-internal use
+
+    window.onerror = function(msg, url, line, col, error) {
+        console.error('[WebView Error]', msg, url, line, col, error);
+        try {
+            send('clientLog', `[JS Error] ${msg} at ${line}:${col}`);
+        } catch (_) {}
+    };
+
+    const fmt = (ms) => {
+        if (!ms || ms < 0 || isNaN(ms)) return '0:00';
+        const s = Math.floor(ms / 1000);
+        const h = Math.floor(s / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        const sec = s % 60;
+        const mm = String(m).padStart(h > 0 ? 2 : 1, '0');
+        const ss = String(sec).padStart(2, '0');
+        return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+    };
+
+    const escapeHtml = (str) => {
+        if (!str) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    };
+
+    const normalizeAudioName = (name) => {
+        if (!name) return '';
+        return String(name)
+            .replace(/\s*\([^)]*(?:stereo|surround|mono|\d+\.\d+|ch)[^)]*\)/gi, '')
+            .replace(/\s*\[[^\]]*\]/g, '')
+            .toLowerCase()
+            .trim();
+    };
+    window.normalizeAudioName = normalizeAudioName;
+
+    const isTrackMatchingResolution = (trackName, trackUrl, meta) => {
+        if (!meta) return false;
+        if (meta.activeLazyVideoTrackUrl && trackUrl) {
+            return trackUrl === meta.activeLazyVideoTrackUrl;
+        }
+        if (!trackName) return false;
+
+        const resParts = meta.resolution ? meta.resolution.split('x') : [];
+        const w = resParts[0] ? parseInt(resParts[0].trim(), 10) : 0;
+        const h = resParts[1] ? parseInt(resParts[1].trim(), 10) : 0;
+
+        const nameLower = String(trackName).toLowerCase().trim();
+
+        // 1. Direct height matching: e.g. "1080p", "720p", "480p", "2160p"
+        if (h > 0) {
+            if (nameLower.includes(h + 'p') || nameLower.startsWith(h.toString())) return true;
+            // Cinemascope / ultrawide letterbox aspect ratio tolerance:
+            // 1080p stream cropped to 2.40:1 (1920x800, 1920x804, 1920x816) matches 1080p track
+            if (w === 1920 && nameLower.includes('1080')) return true;
+            // 720p ultrawide (1280x534..1280x720) matches 720p track
+            if (w === 1280 && nameLower.includes('720')) return true;
+            // 4K ultrawide (3840x1600..3840x2160) matches 4k/2160p track
+            if (w === 3840 && (nameLower.includes('2160') || nameLower.includes('4k'))) return true;
+            // Standard height ranges
+            if (h >= 700 && h <= 1080 && nameLower.includes('1080')) return true;
+            if (h >= 480 && h < 700 && nameLower.includes('720')) return true;
+        }
+
+        // 2. Direct width matching: e.g. "1920", "1280"
+        if (w > 0 && (nameLower.includes(w + 'p') || nameLower.startsWith(w.toString()))) {
+            return true;
+        }
+
+        return false;
+    };
+
+    const isTrackHD = (trackName, meta) => {
+        const nameLower = String(trackName || '').toLowerCase();
+        if (nameLower.includes('1080') || nameLower.includes('720') || nameLower.includes('2160') || nameLower.includes('4k')) {
+            return true;
+        }
+        if (meta && meta.resolution) {
+            const resParts = meta.resolution.split('x');
+            const w = resParts[0] ? parseInt(resParts[0].trim(), 10) : 0;
+            const h = resParts[1] ? parseInt(resParts[1].trim(), 10) : 0;
+            if (h >= 720 || w >= 1280) return true;
+        }
+        return false;
+    };
+
+    const formatStandardQualityLabel = (resStr, fallbackTrackName) => {
+        if (fallbackTrackName) {
+            const nameClean = String(fallbackTrackName).trim();
+            const lower = nameClean.toLowerCase();
+            if (lower.includes('4k') || lower.includes('2160')) return '4K';
+            if (lower.includes('1440') || lower.includes('2k')) return '1440p';
+            if (lower.includes('1080')) return '1080p';
+            if (lower.includes('720')) return '720p';
+            if (lower.includes('480')) return '480p';
+            if (lower.includes('360')) return '360p';
+        }
+        if (!resStr) return fallbackTrackName || 'Auto';
+        const parts = resStr.split('x');
+        if (parts.length < 2) return resStr;
+        const w = parseInt(parts[0].trim(), 10) || 0;
+        const h = parseInt(parts[1].trim(), 10) || 0;
+        if (w >= 3800 || h >= 1600) return '4K';
+        if (w >= 2500 || h >= 1300) return '1440p';
+        if (w >= 1900 || (h >= 750 && h <= 1100)) return '1080p';
+        if (w >= 1200 || (h >= 500 && h < 750)) return '720p';
+        if (w >= 800 || (h >= 400 && h < 500)) return '480p';
+        if (w >= 600 || (h >= 300 && h < 400)) return '360p';
+        return h > 0 ? `${h}p` : resStr;
+    };
+    window.formatStandardQualityLabel = formatStandardQualityLabel;
+
+    // State
+    let currentSpeed = 1.0;
+    window.currentSpeed = 1.0;
+    let isSeeking = false, durationMs = 0, currentPosMs = 0;
+    let isMuted = false, currentVolume = 100;
+    let isMenuOpen = false;
+    let subDelaySec = 0, audioDelaySec = 0;
+    let subOverrideVisible = true, subCaptionsFilterOn = false, subBloatFilterOn = true, subUppercaseOn = false;
+    let isAudioNormOn = false, isAudioSpatialOn = false, isVolumeMaxOn = false;
+    let currentTitle = '', currentEpisodeId = '', resumeHandled = false, userDismissedProbing = false, pendingResumeMs = 0;
+    let isAppLoading = false;
+    let linksData = [];
+    let maturityAdvisoryTimer = null;
+    let lastShownAdvisoryMedia = '';
+    let currentLinkIndex = -1;
+    let seekLockTimer = null;
+    let episodesData = [];
+    let loadingTimer = null;
+    let isCurrentlyLoading = false;
+    let globalIsLoading = false;   // set by C++ via state_update (core_idle || paused-for-cache)
+    let globalIsPlaying = false;
+    let endCountdownTimer = null;
+    window.autoPlayEnabled = true;
+    let _cachedChapters = [];
+    let _cachedSkipIntervals = [];
+    let _activeChapterIndex = -1;
+    let pauseInfoMode = 'delay_5s'; // 'delay_5s', 'delay_10s', 'delay_20s', 'immediate', 'off'
+    let showPauseCast = true;
+    let currentCastList = [];
+    let pauseCastMode = 'character';
+    let pauseInfoTimer = null;
+    let currentLyrics = [];
+    let activeLyricIndex = -1;
+    let hasShownMaturityAdvisoryThisSession = false;
+
+    // ── Synced Lyrics Engine Helpers (Top-Level Scope) ───────────────────
+    function parseLyrics(text) {
+        if (!text || typeof text !== 'string') return [];
+        const lines = text.split(/\r?\n/);
+        const parsed = [];
+        const timeRegex = /\[(\d{1,2}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+
+        for (const raw of lines) {
+            let match;
+            timeRegex.lastIndex = 0;
+            while ((match = timeRegex.exec(raw)) !== null) {
+                const min = parseInt(match[1], 10);
+                const sec = parseInt(match[2], 10);
+                const ms = match[3] ? parseInt(match[3].padEnd(3, '0').slice(0, 3), 10) : 0;
+                const textOnly = raw.replace(timeRegex, '').trim();
+                if (textOnly) {
+                    parsed.push({ timeMs: (min * 60 + sec) * 1000 + ms, text: textOnly });
+                }
+            }
+        }
+        return parsed.sort((a, b) => a.timeMs - b.timeMs);
+    }
+
+    function updateSyncedLyrics(posMs) {
+        if (!currentLyrics || currentLyrics.length === 0) return;
+        let nextIdx = -1;
+        for (let i = 0; i < currentLyrics.length; i++) {
+            if (currentLyrics[i].timeMs <= posMs) {
+                nextIdx = i;
+            } else {
+                break;
+            }
+        }
+
+        if (nextIdx !== activeLyricIndex) {
+            activeLyricIndex = nextIdx;
+            const list = document.getElementById('audioLyricsList');
+            if (!list) return;
+
+            const lines = list.querySelectorAll('.lyric-line');
+            lines.forEach((line, idx) => {
+                line.classList.toggle('active', idx === activeLyricIndex);
+            });
+
+            const activeLine = list.querySelector('.lyric-line.active');
+            if (activeLine) {
+                activeLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }
+    window.updateSyncedLyrics = updateSyncedLyrics;
+
+    function renderLyricsList(lyrics) {
+        const list = document.getElementById('audioLyricsList');
+        if (!list) return;
+        currentLyrics = lyrics || [];
+        activeLyricIndex = -1;
+
+        if (!currentLyrics || currentLyrics.length === 0) {
+            list.innerHTML = `
+                <div class="lyrics-placeholder">
+                    <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor" style="opacity: 0.35; margin-bottom: 12px;">
+                        <path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/>
+                    </svg>
+                    <p id="audioLyricsStatusText">No timed lyrics available for this stream</p>
+                </div>`;
+            return;
+        }
+
+        list.innerHTML = currentLyrics.map((line, idx) => `
+            <div class="lyric-line" data-idx="${idx}" data-time="${line.timeMs}">
+                ${line.text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}
+            </div>
+        `).join('');
+
+        list.querySelectorAll('.lyric-line').forEach(el => {
+            el.addEventListener('click', () => {
+                const t = parseInt(el.dataset.time, 10);
+                if (!isNaN(t)) {
+                    send('seekTo', t);
+                }
+            });
+        });
+    }
+
+    // Element References
+    const overlay       = document.getElementById('overlay');
+    const playPauseBtn  = document.getElementById('playPauseBtn');
+    const muteBtn       = document.getElementById('muteBtn');
+    const seekBar       = document.getElementById('seekBar');
+    const seekFill      = document.getElementById('seekFill');
+    const seekBuffer    = document.getElementById('seekBuffer');
+    const volumeBar     = document.getElementById('volumeBar');
+    const timeDisplay   = document.getElementById('timeDisplay');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const backBtn       = document.getElementById('backBtn');
+    const loadingContainer = document.getElementById('loadingContainer');
+    const loadingStatus = document.getElementById('loadingStatus');
+    const titleDisplay  = document.getElementById('titleDisplay');
+    const nextEpBtn     = document.getElementById('nextEpBtn');
+    const episodesBtn   = document.getElementById('episodesBtn');
+    const episodesPanel = document.getElementById('episodesPanel');
+    const chaptersBtn   = document.getElementById('chaptersBtn');
+    const chaptersPanel = document.getElementById('chaptersPanel');
+    const chaptersList  = document.getElementById('chaptersList');
+    const chaptersSubtitle = document.getElementById('chaptersSubtitle');
+    const resumeOverlay = document.getElementById('resumeOverlay');
+    const videoEndedOverlay = document.getElementById('videoEndedOverlay');
+    const seasonSelectWrap = document.getElementById('seasonSelectWrap');
+    const seasonSelect     = document.getElementById('seasonSelect');
+    const seekWrap      = document.getElementById('seekWrap');
+    const seekChapters  = document.getElementById('seekChapters');
+    const seekTooltip   = document.getElementById('seekTooltip');
+
+
+    // Zone references
+    const zoneLeft          = document.getElementById('zoneLeft');
+    const zoneCenter        = document.getElementById('zoneCenter');
+    const zoneRight         = document.getElementById('zoneRight');
+    const ctxMenu           = document.getElementById('contextMenuOverlay');
+
+    // ── Paced Probing Status Controller ─────────────────────────────────────────
+    // Prevents text flickering and rapid-fire string jumping by enforcing a minimum
+    // readable visual dwell time (650ms) and gentle opacity crossfade between phases.
+    let _probingPacerCurrentText = '';
+    let _probingPacerCurrentPhase = '';
+    let _probingPacerNextChangeTime = 0;
+    let _probingPacerTimer = null;
+    let _probingPacerPending = null;
+    let _scheduledProbingDismissTimer = null;
+
+    function applyProbingStatusDirect(text, phase, isHtml = false) {
+        const pStatus = document.getElementById('linkProbingStatus');
+        if (!pStatus) return;
+        _probingPacerCurrentPhase = phase;
+        _probingPacerCurrentText = text;
+        _probingPacerNextChangeTime = Date.now() + 800;
+
+        if (isHtml) {
+            if (pStatus.innerHTML !== text) pStatus.innerHTML = text;
+        } else {
+            if (pStatus.textContent !== text) pStatus.textContent = text;
+        }
+    }
+
+    const setProbingStatus = (text, phase = '', immediate = false) => {
+        if (!text) return;
+        if (phase && _probingPacerCurrentPhase === phase && _probingPacerCurrentText === text) return;
+
+        if (immediate) {
+            if (_probingPacerTimer) { clearTimeout(_probingPacerTimer); _probingPacerTimer = null; }
+            _probingPacerPending = null;
+            applyProbingStatusDirect(text, phase, false);
+            return;
+        }
+
+        const now = Date.now();
+        if (now < _probingPacerNextChangeTime && _probingPacerCurrentText !== '') {
+            _probingPacerPending = { text, phase, isHtml: false };
+            if (!_probingPacerTimer) {
+                _probingPacerTimer = setTimeout(() => {
+                    _probingPacerTimer = null;
+                    if (_probingPacerPending) {
+                        const next = _probingPacerPending;
+                        _probingPacerPending = null;
+                        applyProbingStatusDirect(next.text, next.phase, next.isHtml);
+                    }
+                }, Math.max(50, _probingPacerNextChangeTime - now));
+            }
+            return;
+        }
+
+        if (_probingPacerTimer) { clearTimeout(_probingPacerTimer); _probingPacerTimer = null; }
+        _probingPacerPending = null;
+        applyProbingStatusDirect(text, phase, false);
+    };
+
+    function applyProbingListVisibility(showDetails) {
+        const listEl = document.getElementById('linkProbingList');
+        const eyeBtn = document.getElementById('probingToggleDetailsBtn');
+        const iconOpen = document.getElementById('eyeIconOpen');
+        const iconClosed = document.getElementById('eyeIconClosed');
+
+        if (listEl) {
+            if (showDetails) {
+                listEl.classList.remove('collapsed');
+            } else {
+                listEl.classList.add('collapsed');
+            }
+        }
+        if (eyeBtn) {
+            if (showDetails) {
+                eyeBtn.classList.add('active');
+                if (iconOpen) iconOpen.style.display = 'block';
+                if (iconClosed) iconClosed.style.display = 'none';
+            } else {
+                eyeBtn.classList.remove('active');
+                if (iconOpen) iconOpen.style.display = 'none';
+                if (iconClosed) iconClosed.style.display = 'block';
+            }
+        }
+    }
+    // Initialize probing list visibility (collapsed by default unless explicitly toggled on)
+    applyProbingListVisibility(localStorage.getItem('cs3_show_probing_details') === 'true');
+
+    // ── Hard-reset every overlay/timer atomically when a new playback session begins.
+    // This is the single source of truth that kills race conditions on re-entry.
+    function hardResetAllOverlays() {
+        // Kill all pending timers that could fire from a stale session
+        if (window.resumeDismissTimer) { clearTimeout(window.resumeDismissTimer); window.resumeDismissTimer = null; }
+        if (window.probingDismissTimer) { clearTimeout(window.probingDismissTimer); window.probingDismissTimer = null; }
+        if (loadingTimer) { clearTimeout(loadingTimer); loadingTimer = null; }
+        if (endCountdownTimer) { clearInterval(endCountdownTimer); endCountdownTimer = null; }
+        if (_probingPacerTimer) { clearTimeout(_probingPacerTimer); _probingPacerTimer = null; }
+        if (_scheduledProbingDismissTimer) { clearTimeout(_scheduledProbingDismissTimer); _scheduledProbingDismissTimer = null; }
+        if (cumulativeSeekTimer) { clearTimeout(cumulativeSeekTimer); cumulativeSeekTimer = null; }
+        cumulativeSeekMs = 0;
+        lastSeekSign = 0;
+
+        _probingPacerPending = null;
+        _probingPacerCurrentText = '';
+        _probingPacerCurrentPhase = '';
+        _probingPacerNextChangeTime = 0;
+        const pBadge = document.getElementById('probingSourceCountBadge');
+        if (pBadge) pBadge.style.display = 'none';
+
+        // Reset all session-scoped JS state
+        resumeHandled = false;
+        userDismissedProbing = false;
+        pendingResumeMs = 0;
+        durationMs = 0;
+        currentPosMs = 0;
+        isSeeking = false;
+        isCurrentlyLoading = false;
+        globalIsLoading = false;
+        globalIsPlaying = false;
+        window.sessionStartTime = Date.now();
+
+        // Force all overlays to their correct initial state.
+        // Link probing overlay is displayed as the atomic central status card for every new session/episode.
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const pContent = document.getElementById('linkProbingContent');
+        if (pOverlay) {
+            pOverlay.classList.add('active');
+            pOverlay.classList.remove('dismissing');
+            delete pOverlay.dataset.dismissing;
+        }
+        if (pContent)  { pContent.classList.remove('dismissing'); }
+        const errActions = document.getElementById('linkProbingErrorActions');
+        if (errActions) errActions.style.display = 'none';
+        const scanBar = document.querySelector('.probing-scan-bar');
+        if (scanBar) scanBar.style.display = '';
+        const normActions = document.getElementById('linkProbingActions');
+        if (normActions) normActions.style.display = '';
+        const pPlayBtn = document.getElementById('probingPlayBtn');
+        if (pPlayBtn) {
+            pPlayBtn.style.display = 'none';
+            pPlayBtn.style.opacity = '';
+            pPlayBtn.style.pointerEvents = '';
+            pPlayBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg> Skip Loading`;
+        }
+        const retryBtn = document.getElementById('probingRetryBtn');
+        if (retryBtn) { retryBtn.style.opacity = ''; retryBtn.style.pointerEvents = ''; }
+
+        const videoEndedOvl = document.getElementById('videoEndedOverlay');
+        if (videoEndedOvl) videoEndedOvl.style.display = 'none';
+        if (typeof hideUpNextCard === 'function') {
+            hideUpNextCard(false);
+        }
+        upNextDismissedEpisodeId = null;
+
+        if (resumeOverlay) resumeOverlay.style.display = 'none';
+        if (loadingContainer) loadingContainer.classList.remove('show');
+
+        clearPauseInfoTimer();
+        const pauseOverlay = document.getElementById('pauseInfoOverlay');
+        const pauseBackdrop = document.getElementById('pauseBackdrop');
+        if (pauseOverlay) { pauseOverlay.classList.remove('visible'); }
+        if (pauseBackdrop) { pauseBackdrop.classList.remove('visible'); }
+
+        document.body.classList.remove('audio-mode-active');
+        const audioTabCover = document.getElementById('audioTabCover');
+        const audioTabLyrics = document.getElementById('audioTabLyrics');
+        const audioCoverView = document.getElementById('audioCoverView');
+        const audioLyricsView = document.getElementById('audioLyricsView');
+        if (audioTabCover) audioTabCover.classList.add('active');
+        if (audioTabLyrics) audioTabLyrics.classList.remove('active');
+        if (audioCoverView) audioCoverView.style.display = 'flex';
+        if (audioLyricsView) audioLyricsView.style.display = 'none';
+
+        const banner = document.getElementById('maturityAdvisoryBanner');
+        if (banner) banner.classList.remove('active');
+        if (maturityAdvisoryTimer) {
+            clearTimeout(maturityAdvisoryTimer);
+            maturityAdvisoryTimer = null;
+        }
+        hasShownMaturityAdvisoryThisSession = false;
+
+        // Ensure the main player UI base state is restored internally (visibility handled by evaluateUIStates)
+        const mainOverlay = document.getElementById('overlay');
+        if (mainOverlay) { mainOverlay.style.display = ''; mainOverlay.style.opacity = ''; }
+
+        if (seekFill) seekFill.style.width = '0%';
+        if (seekBar) seekBar.value = 0;
+        if (seekBuffer) seekBuffer.style.width = '0%';
+        if (timeDisplay) timeDisplay.innerText = '0:00 / 0:00';
+        chaptersBtn?.classList.add('hidden');
+    }
+
+    function updatePauseInfoBadge() {
+        const badge = document.getElementById('ctxPauseInfoBadge');
+        if (!badge) return;
+        switch (pauseInfoMode) {
+            case 'delay_5s': badge.innerText = '5s'; break;
+            case 'delay_10s': badge.innerText = '10s'; break;
+            case 'delay_20s': badge.innerText = '20s'; break;
+            case 'immediate': badge.innerText = '0s'; break;
+            case 'off': badge.innerText = 'Off'; break;
+            default: badge.innerText = '5s'; break;
+        }
+        badge.style.color = (pauseInfoMode === 'off') ? 'rgba(255, 255, 255, 0.45)' : '#9D4EDD';
+    }
+
+    function clearPauseInfoTimer() {
+        if (pauseInfoTimer) {
+            clearTimeout(pauseInfoTimer);
+            pauseInfoTimer = null;
+        }
+    }
+
+    function hidePauseInfoOverlay() {
+        clearPauseInfoTimer();
+        const pauseOverlay = document.getElementById('pauseInfoOverlay');
+        const pauseBackdrop = document.getElementById('pauseBackdrop');
+        const pauseCast = document.getElementById('pauseInfoCast');
+        const castShowcase = document.getElementById('pauseCastShowcase');
+        if (pauseOverlay) pauseOverlay.classList.remove('visible');
+        if (pauseBackdrop) pauseBackdrop.classList.remove('visible');
+        if (pauseCast) pauseCast.classList.remove('visible');
+        if (castShowcase) castShowcase.classList.remove('active');
+    }
+
+    function schedulePauseInfoOverlay() {
+        clearPauseInfoTimer();
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const isProbing = pOverlay && pOverlay.classList.contains('active');
+        const videoEndedOvl = document.getElementById('videoEndedOverlay');
+        const isVideoEnded = videoEndedOvl && videoEndedOvl.style.display === 'flex';
+
+        if (globalIsPlaying || isProbing || isAppLoading || isVideoEnded || pauseInfoMode === 'off') {
+            hidePauseInfoOverlay();
+            return;
+        }
+
+        const pauseOverlay = document.getElementById('pauseInfoOverlay');
+        const pauseBackdrop = document.getElementById('pauseBackdrop');
+        const pauseCast = document.getElementById('pauseInfoCast');
+        if (!pauseOverlay) return;
+
+        const showOverlays = () => {
+            pauseOverlay.classList.add('visible');
+            if (pauseBackdrop) pauseBackdrop.classList.add('visible');
+            if (showPauseCast && currentCastList && currentCastList.length > 0 && pauseCast) {
+                pauseCast.classList.add('visible');
+            }
+            const advisoryBanner = document.getElementById('maturityAdvisoryBanner');
+            if (advisoryBanner) advisoryBanner.classList.remove('active');
+        };
+
+        if (pauseInfoMode === 'immediate') {
+            showOverlays();
+            return;
+        }
+
+        let delayMs = 5000;
+        if (pauseInfoMode === 'delay_10s') delayMs = 10000;
+        else if (pauseInfoMode === 'delay_20s') delayMs = 20000;
+
+        pauseInfoTimer = setTimeout(() => {
+            const currentProbing = document.getElementById('linkProbingOverlay')?.classList.contains('active');
+            const currentEnded = document.getElementById('videoEndedOverlay')?.style.display === 'flex';
+            if (!globalIsPlaying && !currentProbing && !isAppLoading && !currentEnded && pauseInfoMode !== 'off') {
+                showOverlays();
+            }
+        }, delayMs);
+    }
+
+    function dismissResumeOverlay() {
+        if (window.resumeDismissTimer) {
+            clearTimeout(window.resumeDismissTimer);
+            window.resumeDismissTimer = null;
+        }
+        if (resumeOverlay && resumeOverlay.style.display !== 'none' && !resumeOverlay.classList.contains('dismissing')) {
+            resumeOverlay.classList.add('dismissing');
+            setTimeout(() => {
+                resumeOverlay.style.display = 'none';
+                resumeOverlay.classList.remove('dismissing');
+            }, 280);
+        }
+        resumeHandled = true;
+    }
+
+    function evaluateResumeOverlay() {
+        if (resumeHandled) return;
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const isProbing = pOverlay && pOverlay.classList.contains('active');
+        const videoEndedOvl = document.getElementById('videoEndedOverlay');
+        const isVideoEnded = videoEndedOvl && videoEndedOvl.style.display === 'flex';
+        const hasOpenPanel = isMenuOpen || document.body.classList.contains('panel-open') || !!document.querySelector('.panel.open, .ep-fullscreen-drawer.open');
+
+        // Automatically dismiss and mark handled if playback has progressed > 8s past resume or moved outside resume window
+        if (!resumeHandled && pendingResumeMs >= 10000 && currentPosMs > 0) {
+            if (currentPosMs > pendingResumeMs + 8000 || currentPosMs < pendingResumeMs - 2000) {
+                dismissResumeOverlay();
+                return;
+            }
+        }
+
+        // Only display resume pill if at least 10s into video, not at the very end, and within initial playback resume window
+        const isEligible = pendingResumeMs >= 10000 && (durationMs <= 0 || pendingResumeMs < (durationMs - 15000)) &&
+            (currentPosMs <= 0 || (currentPosMs >= pendingResumeMs - 2000 && currentPosMs <= pendingResumeMs + 8000));
+        const shouldShow = isEligible && !resumeHandled && !isProbing && !isAppLoading && !isVideoEnded && !hasOpenPanel;
+
+        if (shouldShow) {
+            const timeElem = document.getElementById('resumeTime');
+            if (timeElem) timeElem.innerText = fmt(pendingResumeMs);
+            if (resumeOverlay && resumeOverlay.style.display !== 'flex') {
+                resumeOverlay.classList.remove('dismissing');
+                resumeOverlay.style.display = 'flex';
+                void resumeOverlay.offsetWidth;
+            }
+            if (!window.resumeDismissTimer) {
+                window.resumeDismissTimer = setTimeout(() => {
+                    dismissResumeOverlay();
+                }, 7000);
+            }
+        } else {
+            if (resumeOverlay && !resumeOverlay.classList.contains('dismissing')) {
+                resumeOverlay.style.display = 'none';
+            }
+        }
+    }
+
+    function evaluateUIStates() {
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const isProbing = pOverlay && pOverlay.classList.contains('active');
+        const videoEndedOvl = document.getElementById('videoEndedOverlay');
+        const isVideoEnded = videoEndedOvl && videoEndedOvl.style.display === 'flex';
+        
+        // Master visibility control for the main player UI.
+        // #overlay starts with hide-main-ui in HTML — controls are invisible on cold boot.
+        // dismissProbingOverlay() removes hide-main-ui with a smooth CSS fade-in.
+        // This block only handles the non-probing edge case (e.g. fast re-evaluate after dismiss).
+        const mainOverlay = document.getElementById('overlay');
+        if (mainOverlay && !isProbing) {
+            if (mainOverlay.classList.contains('hide-main-ui')) {
+                mainOverlay.classList.remove('hide-main-ui');
+            }
+        }
+        
+        // 1. Pause Info Overlay (Configurable Delay / Immediate / Off)
+        if (globalIsPlaying || isProbing || isAppLoading || isVideoEnded || pauseInfoMode === 'off') {
+            hidePauseInfoOverlay();
+        } else {
+            const pauseOverlay = document.getElementById('pauseInfoOverlay');
+            if (!pauseInfoTimer && pauseOverlay && !pauseOverlay.classList.contains('visible')) {
+                schedulePauseInfoOverlay();
+            }
+        }
+        
+        // 2. Loading Container (Spinner)
+        // If the video is actively playing, only genuine native buffering (stalled cache) can show the spinner.
+        // Micro-seeks should NEVER force the center loading spinner to flash.
+        const isNativeBuffering = globalIsLoading && !isSeeking;
+        const isScrapingPhase = isAppLoading && !globalIsPlaying && (currentPosMs <= 100);
+        const shouldBeLoading = (isNativeBuffering || isScrapingPhase) && !isProbing && !isVideoEnded && !isSeeking;
+        
+        const getCleanLoadingText = () => {
+            if (isNativeBuffering) return 'Buffering...';
+            if (isScrapingPhase) return 'Loading source...';
+            return 'Buffering...';
+        };
+
+        if (shouldBeLoading !== isCurrentlyLoading) {
+            isCurrentlyLoading = shouldBeLoading;
+            clearTimeout(loadingTimer);
+            if (shouldBeLoading) {
+                loadingTimer = setTimeout(() => {
+                    if (loadingContainer) loadingContainer.classList.add('show');
+                    if (loadingStatus) loadingStatus.innerText = getCleanLoadingText();
+                }, 200);
+            } else {
+                if (loadingContainer) loadingContainer.classList.remove('show');
+                if (loadingStatus) loadingStatus.innerText = '';
+            }
+        } else if (shouldBeLoading) {
+             if (loadingStatus) loadingStatus.innerText = getCleanLoadingText();
+        }
+    }
+
+    // Panel toggles
+    const panels = ['qualityServerPopover','audioSubsPopover','episodesPanel','chaptersPanel','serversPanel','subsPanel','settingsPanel','speedPanel','aspectPanel'];
+
+    // SVG Icons
+    const SVGS = {
+        play:  `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M8 6.82v10.36c0 .79.87 1.27 1.54.84l8.14-5.18c.62-.39.62-1.29 0-1.69L9.54 5.98C8.87 5.55 8 6.03 8 6.82z"/></svg>`,
+        pause: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M8 19c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2s-2 .9-2 2v10c0 1.1.9 2 2 2zm6-12v10c0 1.1.9 2 2 2s2-.9 2-2V7c0-1.1-.9-2-2-2s-2 .9-2 2z"/></svg>`,
+        rewind10: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>`,
+        forward10: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 8-8 8-8z"/></svg>`,
+        rewind: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></svg>`,
+        forward: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M12 5V1l5 5-5 5V7c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6h2c0 4.42-3.58 8-8 8s-8-3.58-8-8 8-8 8-8z"/></svg>`,
+        volHigh:`<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>`,
+        volMed: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 9v6h4l5 5V4L9 9H5z"/></svg>`,
+        volLow: `<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M7 9v6h4l5 5V4L11 9H7z"/></svg>`,
+        volMute:`<svg viewBox="0 0 24 24" fill="currentColor" width="100%" height="100%"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>`,
+        check:  `<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>`,
+    };
+
+    // Volume OSD (Single unified HUD for all volume changes)
+    let volumeOsdTimer = null;
+    const showVolumeOsd = (vol, isMutedState = null) => {
+        const osd = document.getElementById('volumeOsd');
+        const txt = document.getElementById('volumeOsdText');
+        const icon = document.getElementById('volumeOsdIcon');
+        const fill = document.getElementById('volumeOsdBarFill');
+        if (!osd || !txt || !icon) return;
+        
+        const effectiveMuted = (isMutedState !== null) ? isMutedState : (isMuted || vol <= 0);
+        const maxVol = (typeof isVolumeMaxOn !== 'undefined' && isVolumeMaxOn) ? 200 : 100;
+        const clampedVol = Math.round(Math.max(0, Math.min(maxVol, vol)));
+        
+        txt.innerText = effectiveMuted ? 'Muted' : `${clampedVol}%`;
+        if (fill) {
+            const fillPct = Math.min(100, (clampedVol / maxVol) * 100);
+            fill.style.width = effectiveMuted ? '0%' : `${fillPct}%`;
+        }
+        if (effectiveMuted) {
+            icon.innerHTML = SVGS.volMute;
+        } else if (clampedVol < 34) {
+            icon.innerHTML = SVGS.volLow;
+        } else if (clampedVol < 67) {
+            icon.innerHTML = SVGS.volMed;
+        } else {
+            icon.innerHTML = SVGS.volHigh;
+        }
+        
+        osd.classList.add('show');
+        clearTimeout(volumeOsdTimer);
+        volumeOsdTimer = setTimeout(() => { osd.classList.remove('show'); }, 1200);
+    };
+    window.showVolumeOsd = showVolumeOsd;
+
+    // Action Feedback
+    let feedbackTimer;
+    const triggerActionFeedback = (svgHtml, align = 'center', text = '') => {
+        const fb = document.getElementById('actionFeedback');
+        const fbIcon = document.getElementById('actionFeedbackIcon');
+        const fbText = document.getElementById('actionFeedbackText');
+        const lc = document.getElementById('loadingContainer');
+        if (fbIcon) fbIcon.innerHTML = svgHtml;
+        if (fbText) {
+            if (text) {
+                fbText.textContent = text;
+                fbText.style.display = 'block';
+            } else {
+                fbText.textContent = '';
+                fbText.style.display = 'none';
+            }
+        }
+        if (fb) {
+            fb.classList.remove('animate');
+            void fb.offsetWidth; // Force reflow
+            
+            if (align === 'left') {
+                fb.style.left = '25%'; fb.style.top = '50%';
+            } else if (align === 'right') {
+                fb.style.left = '75%'; fb.style.top = '50%';
+            } else {
+                fb.style.left = '50%'; fb.style.top = '50%';
+            }
+            
+            fb.classList.add('animate');
+        }
+        if (lc) lc.style.opacity = '0';
+        clearTimeout(feedbackTimer);
+        feedbackTimer = setTimeout(() => { 
+            if (fb) fb.classList.remove('animate'); 
+            if (lc) lc.style.opacity = '1';
+        }, 500);
+    };
+
+    // Auto-hide Controls
+    let hideTimer;
+    let lastMouseX = -1;
+    let lastMouseY = -1;
+    let isHoveringControls = false;
+
+    // Do not hide controls if the user's mouse is actively resting on the top bar, bottom bar, or open panels
+    document.querySelectorAll('.top-bar, .bottom-bar, .panel').forEach(el => {
+        el.addEventListener('mouseenter', () => { isHoveringControls = true; clearTimeout(hideTimer); });
+        el.addEventListener('mouseleave', () => { isHoveringControls = false; showControls(); });
+    });
+    
+    const showControls = (e, forceHide = false) => {
+        if (document.body.classList.contains('keyboard-seeking')) {
+            return; // Never show full controls while keyboard seeking is active!
+        }
+        if (forceHide) {
+            isHoveringControls = false;
+        }
+        if (e && e.type === 'mousemove') {
+            const dist = Math.hypot(e.clientX - lastMouseX, e.clientY - lastMouseY);
+            if (dist < 3) {
+                return; // Ignore synthesized mousemove where mouse didn't actually move
+            }
+            lastMouseX = e.clientX;
+            lastMouseY = e.clientY;
+        }
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const isProbing = pOverlay && pOverlay.classList.contains('active');
+        if (isProbing && !userDismissedProbing && !globalIsPlaying && currentPosMs <= 50) {
+            clearTimeout(hideTimer);
+            document.body.classList.remove('hidden-controls');
+            return;
+        }
+        if (overlay.style.opacity === '0' && videoEndedOverlay.style.display !== 'flex') {
+            overlay.style.opacity = '';
+        }
+        overlay.classList.remove('hidden-controls');
+        overlay.classList.remove('hide-main-ui');
+        document.body.classList.remove('hidden-controls');
+        const sBtn = document.getElementById('skipBtn');
+        if (sBtn) {
+            sBtn.classList.remove('idle-faded');
+            window._skipBtnActiveSince = Date.now();
+        }
+        clearTimeout(hideTimer);
+        if (!globalIsPlaying && pauseInfoMode !== 'immediate' && pauseInfoMode !== 'off') {
+            hidePauseInfoOverlay();
+            schedulePauseInfoOverlay();
+        }
+        if (!isMenuOpen && !isSeeking && (forceHide || !isHoveringControls)) {
+            hideTimer = setTimeout(() => {
+                if (!isHoveringControls && !isSeeking && !isMenuOpen) {
+                    overlay.classList.add('hidden-controls');
+                    document.body.classList.add('hidden-controls');
+                }
+            }, 3500);
+        }
+    };
+    window.showControls = showControls;
+    window.onNativeKeyActivity = (isSeeking = false) => {
+        isHoveringControls = false;
+        if (document.body.classList.contains('hidden-controls')) {
+            if (isSeeking) {
+                triggerKeyboardSeekingHud();
+            }
+            return;
+        }
+        showControls(null, true);
+    };
+    window.triggerSeekFeedback = (dir) => {
+        const seekStep = window.seekDurationMs || 10000;
+        const delta = (dir === 'left' ? -seekStep : seekStep);
+        const absSeconds = Math.round(Math.abs(cumulativeSeekMs || delta) / 1000);
+        const seekText = (dir === 'left' ? `-${absSeconds}s` : `+${absSeconds}s`);
+        if (dir === 'left') {
+            triggerActionFeedback(SVGS.rewind10, 'left', seekText);
+        } else if (dir === 'right') {
+            triggerActionFeedback(SVGS.forward10, 'right', seekText);
+        }
+        if (document.body.classList.contains('hidden-controls')) {
+            triggerKeyboardSeekingHud();
+        }
+    };
+
+    window.addEventListener('pointerdown', (e) => {
+        const seekMs = window.seekDurationMs || 10000;
+        if (e.button === 3) {
+            // Mouse 4 (Back) -> Relative seek backward
+            e.preventDefault();
+            e.stopPropagation();
+            doRelativeSeek(-seekMs);
+        } else if (e.button === 4) {
+            // Mouse 5 (Forward) -> Relative seek forward
+            e.preventDefault();
+            e.stopPropagation();
+            doRelativeSeek(seekMs);
+        }
+    });
+
+    document.addEventListener('mousemove', showControls);
+    
+    // Global Focus Lock Prevention: Never allow buttons, sliders, or panels to trap keyboard focus.
+    // Use capture phase (true) so it executes before any stopPropagation() in child elements.
+    document.addEventListener('focusin', (e) => {
+        if (!e.target.closest('input[type="text"], input[type="search"], textarea, [contenteditable]')) {
+            if (e.target instanceof HTMLElement) {
+                e.target.blur();
+            }
+        }
+    }, true);
+
+    document.addEventListener('pointerdown', (e) => {
+        if (!e.target.closest('input[type="text"], input[type="search"], textarea, [contenteditable]')) {
+            if (document.activeElement && document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+                document.activeElement.blur();
+            }
+        }
+    }, true);
+
+    document.addEventListener('click', e => {
+        // Blur active element so buttons don't retain focus when UI hides
+        if (!e.target.closest('input[type="text"], input[type="search"], textarea, [contenteditable]') && document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+        showControls(e);
+    });
+    
+    let keyboardSeekingTimer = null;
+    function triggerKeyboardSeekingHud() {
+        if (keyboardSeekingTimer) {
+            clearTimeout(keyboardSeekingTimer);
+            keyboardSeekingTimer = null;
+        }
+        document.body.classList.add('keyboard-seeking');
+        keyboardSeekingTimer = setTimeout(() => {
+            document.body.classList.remove('keyboard-seeking');
+            keyboardSeekingTimer = null;
+        }, 1400);
+    }
+    window.triggerKeyboardSeekingHud = triggerKeyboardSeekingHud;
+
+    document.addEventListener('keydown', (e) => {
+        isHoveringControls = false;
+        // Never flash full UI on keyboard shortcut actions when controls are hidden
+        if (document.body.classList.contains('hidden-controls')) {
+            const isSeekKey = e.code === 'ArrowLeft' || e.code === 'ArrowRight' || e.code === 'KeyJ' || e.code === 'KeyL' || (!e.ctrlKey && !e.altKey && !e.metaKey && e.key >= '0' && e.key <= '9');
+            if (isSeekKey) {
+                triggerKeyboardSeekingHud();
+            }
+            return;
+        }
+        showControls(e, true);
+    });
+
+    // Panel Management
+    const closeAllPanels = () => {
+        panels.forEach(id => document.getElementById(id)?.classList.remove('open'));
+        document.getElementById('playerModalBackdrop')?.classList.remove('active');
+        document.getElementById('qualityServerBtn')?.classList.remove('active');
+        document.getElementById('audioSubsBtn')?.classList.remove('active');
+        document.getElementById('speedBtn')?.classList.remove('active');
+        if (typeof switchToSubTracksView === 'function') switchToSubTracksView();
+        isMenuOpen = false;
+        document.body.classList.remove('panel-open');
+        document.body.classList.remove('subs-panel-open');
+        showControls();
+        evaluateResumeOverlay();
+    };
+    // Expose on window so inline onclick="closeAllPanels()" attributes work
+    window.closeAllPanels = closeAllPanels;
+    const togglePanel = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const wasOpen = el.classList.contains('open');
+        closeAllPanels();
+        if (!wasOpen) {
+            el.classList.add('open');
+            document.getElementById('playerModalBackdrop')?.classList.add('active');
+            isMenuOpen = true;
+            document.body.classList.add('panel-open');
+            if (id === 'subsPanel') document.body.classList.add('subs-panel-open');
+            if (resumeOverlay) resumeOverlay.style.display = 'none';
+            const sBtn = document.getElementById('skipBtn');
+            if (sBtn) sBtn.style.display = 'none';
+            if (id === 'qualityServerPopover') {
+                document.getElementById('qualityServerBtn')?.classList.add('active');
+            } else if (id === 'audioSubsPopover') {
+                document.getElementById('audioSubsBtn')?.classList.add('active');
+            } else if (id === 'speedPanel') {
+                document.getElementById('speedBtn')?.classList.add('active');
+            } else if (id === 'episodesPanel') {
+                if (typeof renderFilteredEpisodes === 'function' && typeof currentSelectedSeason !== 'undefined') {
+                    renderFilteredEpisodes(currentSelectedSeason, typeof currentSelectedChunk !== 'undefined' ? currentSelectedChunk : -1, true);
+                }
+            }
+        }
+    };
+    // Expose so inline onclick and context menu items can call it
+    window.togglePanel = togglePanel;
+    panels.forEach(id => {
+        const panel = document.getElementById(id);
+        panel?.addEventListener('click', e => e.stopPropagation());
+    });
+
+    // Close buttons
+    document.getElementById('closeEpisodesBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeChaptersBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeServersBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeSubsBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeSettingsBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeQualityBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeAudioBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeSpeedBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+    document.getElementById('closeAspectBtn')?.addEventListener('click', e => { e.stopPropagation(); closeAllPanels(); });
+
+    // Season Dropdown Selector Change Event
+    seasonSelect?.addEventListener('change', e => {
+        renderFilteredEpisodes(parseInt(e.target.value));
+    });
+
+    // Resume Floating Pill
+    const btnStartOverElem = document.getElementById('btnStartOver');
+    if (btnStartOverElem) {
+        btnStartOverElem.addEventListener('click', (e) => {
+            if (e) { e.preventDefault(); e.stopPropagation(); }
+            dismissResumeOverlay();
+            pendingResumeMs = 0;
+            send('seekTo', 0);
+            send('play');
+            triggerActionFeedback(SVGS.rewind10, 'center');
+            showControls();
+        });
+    }
+    const btnDismissResumeElem = document.getElementById('btnDismissResume');
+    if (btnDismissResumeElem) {
+        btnDismissResumeElem.addEventListener('click', (e) => {
+            if (e) { e.preventDefault(); e.stopPropagation(); }
+            dismissResumeOverlay();
+            showControls();
+        });
+    }
+
+    // Seek Bar
+    seekBar.addEventListener('mousedown', () => { 
+        if (durationMs <= 0) return;
+        isSeeking = true; 
+    });
+    seekBar.addEventListener('input', e => {
+        if (durationMs <= 0) return;
+        let pct = e.target.value / 10;
+        pct = Math.max(0, Math.min(100, pct));
+        seekFill.style.width = `${pct}%`;
+        currentPosMs = (pct / 100) * durationMs;
+        timeDisplay.innerText = `${fmt(currentPosMs)} / ${fmt(durationMs)}`;
+    });
+    seekBar.addEventListener('mouseup', e => {
+        if (durationMs <= 0) {
+            // Live stream or unknown duration. Ignore seek!
+            isSeeking = false;
+            return;
+        }
+        let pct = e.target.value / 10;
+        pct = Math.max(0, Math.min(100, pct));
+        const targetMs = Math.round((pct / 100) * durationMs);
+        currentPosMs = targetMs;
+        send('seekTo', targetMs);
+        // Hold the lock — release via incoming state update, not a timer
+        clearTimeout(seekLockTimer);
+        seekLockTimer = setTimeout(() => { isSeeking = false; }, 800);
+    });
+    seekBar.addEventListener('change', () => {
+        // Fallback release if mouseup didn't fire (e.g. touch or drag-out)
+        if (durationMs > 0) {
+            clearTimeout(seekLockTimer);
+            seekLockTimer = setTimeout(() => { isSeeking = false; }, 1500);
+        }
+    });
+
+    // Volume & Mute Visuals Synchronization
+    const updateVolumeTrack = (val) => {
+        const maxVol = (typeof isVolumeMaxOn !== 'undefined' && isVolumeMaxOn) ? 200 : 100;
+        const pct = Math.max(0, Math.min(100, (val / maxVol) * 100));
+        volumeBar.style.setProperty('--vol-pct', pct + '%');
+        const pipVolFill = document.getElementById('pipVolumeFill');
+        if (pipVolFill) pipVolFill.style.height = pct + '%';
+    };
+
+    const applyMuteVisuals = (muted) => {
+        isMuted = muted;
+        updateMuteIcon();
+        const displayVal = muted ? 0 : currentVolume;
+        volumeBar.value = displayVal;
+        updateVolumeTrack(displayVal);
+    };
+
+    updateVolumeTrack(100); // Initialize
+
+    volumeBar.addEventListener('input', e => {
+        const maxVol = (typeof isVolumeMaxOn !== 'undefined' && isVolumeMaxOn) ? 200 : 100;
+        const v = Math.max(0, Math.min(maxVol, parseInt(e.target.value) || 0));
+        currentVolume = v;
+        if (isMuted && v > 0) {
+            isMuted = false;
+            send('toggleMute');
+        }
+        updateMuteIcon();
+        updateVolumeTrack(v);
+        send('setVolume', v);
+        showVolumeOsd(v, isMuted);
+    });
+
+    const volGroupElem = document.querySelector('.vol-group');
+    volumeBar.addEventListener('mousedown', () => volGroupElem?.classList.add('is-dragging'));
+    window.addEventListener('mouseup', () => volGroupElem?.classList.remove('is-dragging'));
+
+    document.addEventListener('wheel', e => {
+        const isCtxOpen = ctxMenu && ctxMenu.style.display === 'block';
+        if (isMenuOpen || isCtxOpen || (e.target && e.target.closest('#contextMenuOverlay'))) return;
+
+        let newVol = currentVolume;
+        const maxVol = (typeof isVolumeMaxOn !== 'undefined' && isVolumeMaxOn) ? 200 : 100;
+        // Scroll up increases volume, scroll down decreases
+        if (e.deltaY < 0) {
+            newVol = Math.min(maxVol, newVol + 5);
+        } else if (e.deltaY > 0) {
+            newVol = Math.max(0, newVol - 5);
+        }
+
+        if (newVol !== currentVolume) {
+            currentVolume = newVol;
+            if (isMuted && newVol > 0) {
+                isMuted = false;
+                send('toggleMute');
+            }
+            applyMuteVisuals(isMuted);
+            send('setVolume', newVol);
+            showVolumeOsd(newVol, isMuted);
+        }
+    });
+
+    // Mute Icon
+    const updateMuteIcon = () => {
+        const w1 = document.getElementById('volWave1');
+        const w2 = document.getElementById('volWave2');
+        const w3 = document.getElementById('volWave3');
+        const cross = document.getElementById('volCross');
+        if (!w1 || !w2 || !w3 || !cross) return;
+
+        if (isMuted || currentVolume === 0) {
+            w1.style.opacity = '0'; w1.style.transform = 'scale(0.5)';
+            w2.style.opacity = '0'; w2.style.transform = 'scale(0.5)';
+            w3.style.opacity = '0'; w3.style.transform = 'scale(0.5)';
+            cross.style.opacity = '1'; cross.style.transform = 'scale(1)';
+        } else {
+            cross.style.opacity = '0'; cross.style.transform = 'scale(0.5)';
+            w1.style.opacity = '1'; w1.style.transform = 'scale(1)';
+
+            if (currentVolume < 33) {
+                w2.style.opacity = '0'; w2.style.transform = 'scale(0.8)';
+                w3.style.opacity = '0'; w3.style.transform = 'scale(0.8)';
+            } else if (currentVolume < 66) {
+                w2.style.opacity = '1'; w2.style.transform = 'scale(1)';
+                w3.style.opacity = '0'; w3.style.transform = 'scale(0.8)';
+            } else {
+                w2.style.opacity = '1'; w2.style.transform = 'scale(1)';
+                w3.style.opacity = '1'; w3.style.transform = 'scale(1)';
+            }
+        }
+    };
+
+    // Cumulative seek tracking state
+    let cumulativeSeekMs = 0;
+    let cumulativeSeekTimer = null;
+    let lastSeekSign = 0;
+
+    // Helper: seek relative
+    const doRelativeSeek = (deltaMs) => {
+        if (durationMs <= 0) return; // Prevent relative seek on live/unknown duration
+        isSeeking = true;
+        currentPosMs = Math.max(0, Math.min(durationMs || Infinity, currentPosMs + deltaMs));
+        let pct = 0;
+        if (durationMs > 0) {
+            pct = (currentPosMs / durationMs) * 100;
+            pct = Math.max(0, Math.min(100, pct));
+            seekFill.style.width = `${pct}%`;
+            seekBar.value = pct * 10;
+        }
+        const timeFormatted = `${fmt(currentPosMs)} / ${fmt(durationMs)}`;
+        timeDisplay.innerText = timeFormatted;
+        const timeBadge = document.getElementById('seekingTimeBadge');
+        if (timeBadge) {
+            timeBadge.innerText = timeFormatted;
+        }
+        const seekTooltip = document.getElementById('seekTooltip');
+        if (seekTooltip && durationMs > 0) {
+            seekTooltip.innerText = timeFormatted;
+            seekTooltip.style.left = `${pct}%`;
+        }
+        if (document.body.classList.contains('hidden-controls')) {
+            triggerKeyboardSeekingHud();
+        }
+
+        const currentSign = Math.sign(deltaMs);
+        if (lastSeekSign !== currentSign) {
+            cumulativeSeekMs = deltaMs;
+            lastSeekSign = currentSign;
+        } else {
+            cumulativeSeekMs += deltaMs;
+        }
+        if (cumulativeSeekTimer) {
+            clearTimeout(cumulativeSeekTimer);
+        }
+        cumulativeSeekTimer = setTimeout(() => {
+            cumulativeSeekMs = 0;
+            lastSeekSign = 0;
+            cumulativeSeekTimer = null;
+        }, 850);
+
+        const absSeconds = Math.round(Math.abs(cumulativeSeekMs) / 1000);
+        const seekText = (cumulativeSeekMs < 0 ? `-${absSeconds}s` : `+${absSeconds}s`);
+
+        if (deltaMs < 0) {
+            triggerActionFeedback(SVGS.rewind10, 'left', seekText);
+        } else if (deltaMs > 0) {
+            triggerActionFeedback(SVGS.forward10, 'right', seekText);
+        }
+        send('seekBy', deltaMs);
+        clearTimeout(seekLockTimer);
+        seekLockTimer = setTimeout(() => { isSeeking = false; }, 800);
+    };
+
+    // Backend Messages
+    const updateAudioPlayPauseIcon = () => {
+        const audioPlayPauseBtn = document.getElementById('audioStationPlayPauseBtn');
+        if (audioPlayPauseBtn) {
+            const playIcon = audioPlayPauseBtn.querySelector('.audio-play-icon');
+            const pauseIcon = audioPlayPauseBtn.querySelector('.audio-pause-icon');
+            if (playIcon && pauseIcon) {
+                playIcon.style.display = globalIsPlaying ? 'none' : 'block';
+                pauseIcon.style.display = globalIsPlaying ? 'block' : 'none';
+            }
+        }
+    };
+    window.updateAudioPlayPauseIcon = updateAudioPlayPauseIcon;
+
+    const forceShowLoading = () => {
+        if (globalIsPlaying) {
+            isCurrentlyLoading = true;
+            clearTimeout(loadingTimer);
+            loadingContainer.classList.add('show');
+        }
+    };
+
+    let lastRenderedSeekPct = -1;
+    let lastRenderedBufferPct = -1;
+
+    const handleStateUpdate = (s) => {
+        if (typeof s.durationMs === 'number' && s.durationMs > 0 && s.durationMs !== durationMs) {
+            durationMs = s.durationMs;
+            renderSeekbarChapters(_cachedChapters, _cachedSkipIntervals);
+        } else if (typeof s.durationMs === 'number') {
+            durationMs = s.durationMs;
+        }
+        const incomingPos = (typeof s.positionMs === 'number') ? s.positionMs : currentPosMs;
+
+        if (isSeeking) {
+            // While seeking, ignore MPV position updates (they lag behind)
+            // But if MPV sends a position close to what we requested, release the lock
+            if (Math.abs(incomingPos - currentPosMs) < 2000 && incomingPos >= 0) {
+                clearTimeout(seekLockTimer);
+                isSeeking = false;
+                currentPosMs = incomingPos;
+                if (durationMs > 0) {
+                    let pct = (currentPosMs / durationMs) * 100;
+                    pct = Math.max(0, Math.min(100, pct));
+                    lastRenderedSeekPct = pct;
+                    seekFill.style.width = `${pct}%`;
+                    seekBar.value = pct * 10;
+                    const pipProg = document.getElementById('pipProgressFill');
+                    if (pipProg) pipProg.style.width = `${pct}%`;
+                    
+                    if (typeof s.bufferMs === 'number') {
+                        let bufPct = (s.bufferMs / durationMs) * 100;
+                        bufPct = Math.max(0, Math.min(100, bufPct));
+                        lastRenderedBufferPct = bufPct;
+                        seekBuffer.style.width = `${bufPct}%`;
+                    }
+                }
+            }
+            // Otherwise keep ignoring (MPV is still catching up)
+        } else {
+            currentPosMs = incomingPos;
+            if (durationMs > 0) {
+                let pct = (currentPosMs / durationMs) * 100;
+                pct = Math.max(0, Math.min(100, pct));
+                if (Math.abs(pct - lastRenderedSeekPct) >= 0.05) {
+                    lastRenderedSeekPct = pct;
+                    seekFill.style.width = `${pct}%`;
+                    seekBar.value = pct * 10;
+                    const pipProg = document.getElementById('pipProgressFill');
+                    if (pipProg) pipProg.style.width = `${pct}%`;
+                    const epPanel = document.getElementById('episodesPanel');
+                    if (epPanel && epPanel.classList.contains('open')) {
+                        const activeEpProg = epPanel.querySelector('.ep-card-desk.active .ep-card-prog-fill');
+                        if (activeEpProg) {
+                            activeEpProg.style.width = `${pct}%`;
+                            if (pct < 90) {
+                                activeEpProg.classList.remove('completed');
+                            } else {
+                                activeEpProg.classList.add('completed');
+                            }
+                        }
+                    }
+                }
+                
+                if (typeof s.bufferMs === 'number') {
+                    let bufPct = (s.bufferMs / durationMs) * 100;
+                    bufPct = Math.max(0, Math.min(100, bufPct));
+                    if (Math.abs(bufPct - lastRenderedBufferPct) >= 0.1) {
+                        lastRenderedBufferPct = bufPct;
+                        seekBuffer.style.width = `${bufPct}%`;
+                    }
+                }
+            }
+        }
+        const timeFormatted = `${fmt(currentPosMs)} / ${fmt(durationMs)}`;
+        if (timeDisplay && timeDisplay.innerText !== timeFormatted) {
+            timeDisplay.innerText = timeFormatted;
+        }
+        
+        // Update Audio Station scrub bar & timestamps
+        const audioCur = document.getElementById('audioCurrentTime');
+        const audioTot = document.getElementById('audioTotalDuration');
+        const audioScrubProg = document.getElementById('audioScrubProgress');
+        const audioScrubBuf = document.getElementById('audioScrubBuffered');
+        if (typeof isAudioScrubbing === 'undefined' || !isAudioScrubbing) {
+            const curStr = fmt(currentPosMs);
+            const totStr = fmt(durationMs);
+            if (audioCur && audioCur.innerText !== curStr) audioCur.innerText = curStr;
+            if (audioTot && audioTot.innerText !== totStr) audioTot.innerText = totStr;
+            if (audioScrubProg && durationMs > 0) {
+                const audioPct = Math.max(0, Math.min(100, (currentPosMs / durationMs) * 100));
+                audioScrubProg.style.width = `${audioPct}%`;
+                if (typeof renderAudioWaveform === 'function') {
+                    renderAudioWaveform(audioPct / 100);
+                }
+            }
+        }
+        if (audioScrubBuf && durationMs > 0 && typeof s.bufferMs === 'number') {
+            const bufPct = Math.max(0, Math.min(100, (s.bufferMs / durationMs) * 100));
+            audioScrubBuf.style.width = `${bufPct}%`;
+        }
+
+        // Update Synced Lyrics active line
+        if (typeof updateSyncedLyrics === 'function') {
+            updateSyncedLyrics(currentPosMs);
+        }
+
+        // Update active chapter in real time
+        if (_cachedChapters && _cachedChapters.length > 0) {
+            let activeIdx = -1;
+            for (let i = _cachedChapters.length - 1; i >= 0; i--) {
+                if (currentPosMs >= _cachedChapters[i].timeMs) {
+                    activeIdx = i;
+                    break;
+                }
+            }
+            if (activeIdx !== _activeChapterIndex) {
+                _activeChapterIndex = activeIdx;
+                const items = chaptersList?.querySelectorAll('.chapter-item');
+                if (items) {
+                    items.forEach((item, idx) => {
+                        if (idx === activeIdx) item.classList.add('active');
+                        else item.classList.remove('active');
+                    });
+                }
+            }
+        }
+
+        // ── Real-time Active Skip Button Evaluation ─────────────────────
+        const skipBtn = document.getElementById('skipBtn');
+        const skipBtnLabel = document.getElementById('skipBtnLabel');
+        if (skipBtn) {
+            if (_cachedSkipIntervals && _cachedSkipIntervals.length > 0 && !isSeeking) {
+                const hasOpenPanel = isMenuOpen || document.body.classList.contains('panel-open') || !!document.querySelector('.panel.open, .ep-fullscreen-drawer.open');
+                const activeInv = !hasOpenPanel && _cachedSkipIntervals.find(inv =>
+                    inv.startMs >= 0 &&
+                    inv.endMs > inv.startMs &&
+                    (inv.endMs - inv.startMs >= 3000) &&
+                    currentPosMs >= inv.startMs &&
+                    currentPosMs < inv.endMs
+                );
+                if (activeInv) {
+                    if (skipBtnLabel) {
+                        const typeName = (activeInv.type || '').toUpperCase();
+                        let label = activeInv.label;
+                        if (!label || label === 'Intro') {
+                            if (typeName === 'RECAP') label = 'Skip Recap';
+                            else if (typeName === 'ENDING' || typeName === 'OUTRO') label = 'Skip Outro';
+                            else if (typeName === 'PREVIEW') label = 'Skip Preview';
+                            else label = 'Skip Intro';
+                        }
+                        skipBtnLabel.innerText = label;
+                    }
+                    if (skipBtn.style.display !== 'inline-flex') {
+                        skipBtn.style.display = 'inline-flex';
+                    }
+                } else {
+                    skipBtn.style.display = 'none';
+                }
+            } else {
+                skipBtn.style.display = 'none';
+            }
+        }
+
+        // ── Up Next Card (15s Pre-Roll Evaluation) ───────────────────────
+        if (!isSeeking && durationMs > 30000 && typeof currentEpisodeId !== 'undefined') {
+            const isAudioMode = !!(document.body.classList.contains('audio-mode-active') || (window.lastMeta && window.lastMeta.isAudioMode));
+            const activeEpIdx = (episodesData || []).findIndex(e => e.isActive);
+            const hasNextEp = (activeEpIdx !== -1 && activeEpIdx < (episodesData || []).length - 1);
+            const remainingMs = durationMs - currentPosMs;
+
+            let isOutroZone = false;
+            if (_cachedSkipIntervals && _cachedSkipIntervals.length > 0) {
+                const outroInv = _cachedSkipIntervals.find(inv => {
+                    const t = (inv.type || '').toUpperCase();
+                    return (t === 'ENDING' || t === 'OUTRO') && inv.startMs >= 0 && inv.endMs > inv.startMs;
+                });
+                if (outroInv && remainingMs <= 25000 && currentPosMs >= outroInv.startMs) {
+                    isOutroZone = true;
+                }
+            }
+
+            const isEligibleTime = (remainingMs <= 15000 && remainingMs > 0) || isOutroZone;
+            const isDismissed = (typeof upNextDismissedEpisodeId !== 'undefined' && upNextDismissedEpisodeId === currentEpisodeId);
+
+            if (hasNextEp && !isAudioMode && isEligibleTime && !isDismissed) {
+                if (typeof isUpNextPreRollActive !== 'undefined' && !isUpNextPreRollActive) {
+                    if (typeof triggerUpNextPreRoll === 'function') {
+                        triggerUpNextPreRoll(Math.max(1, Math.round(remainingMs / 1000)));
+                    }
+                }
+            } else if (typeof isUpNextPreRollActive !== 'undefined' && isUpNextPreRollActive && remainingMs > 16000 && !isOutroZone) {
+                if (typeof hideUpNextCard === 'function') {
+                    hideUpNextCard(false);
+                }
+            }
+        }
+        
+        if (!window._clockTimerAdded) {
+            window._clockTimerAdded = true;
+            setInterval(() => { if (typeof updateClockDisplay === 'function') updateClockDisplay(); }, 1000);
+        }
+
+        const updateClockDisplay = () => {
+            const endTimeContainer = document.getElementById('endTimeContainer');
+            const clockSegment = document.getElementById('clockSegment');
+            const clockValue = document.getElementById('clockValue');
+            const timeDivider1 = document.getElementById('timeDivider1') || document.getElementById('timeDivider');
+            const endTimeSegment = document.getElementById('endTimeSegment');
+            const endTimeValue = document.getElementById('endTimeValue');
+            const timeDivider2 = document.getElementById('timeDivider2');
+            const serverQualitySegment = document.getElementById('serverQualitySegment');
+            const serverQualityValue = document.getElementById('serverQualityValue');
+
+            const showEndTime = document.getElementById('btnToggleEndTime')?.classList.contains('active') ?? false;
+            const showClock = document.getElementById('btnToggleClock')?.classList.contains('active') ?? false;
+            const showServerQuality = document.getElementById('btnToggleServerQuality')?.classList.contains('active') ?? false;
+            
+            if (!endTimeContainer) return;
+
+            let hasClock = false;
+            let hasEnd = false;
+            let hasServer = false;
+            
+            if (showClock && clockSegment && clockValue) {
+                let clockStr = new Date().toLocaleTimeString([], {hour: 'numeric', minute:'2-digit', hour12: true});
+                if (clockValue.innerText !== clockStr) clockValue.innerText = clockStr;
+                clockSegment.style.display = 'inline-flex';
+                hasClock = true;
+            } else if (clockSegment) {
+                clockSegment.style.display = 'none';
+            }
+            
+            if (showEndTime && durationMs > 0 && currentPosMs < durationMs && endTimeSegment && endTimeValue) {
+                let currentSpeed = window.currentSpeed || 1.0;
+                
+                const holdSpeedHud = document.getElementById('holdSpeedHud');
+                if (holdSpeedHud && holdSpeedHud.classList.contains('show')) {
+                    const hudText = document.getElementById('holdSpeedHudText')?.innerText || "";
+                    if (hudText.includes('0.5x')) currentSpeed = 0.5;
+                    else if (hudText.includes('2x')) currentSpeed = 2.0;
+                }
+                
+                let msLeft = (durationMs - currentPosMs) / currentSpeed;
+                let endStr = new Date(Date.now() + msLeft).toLocaleTimeString([], {hour: 'numeric', minute:'2-digit', hour12: true});
+                if (endTimeValue.innerText !== endStr) endTimeValue.innerText = endStr;
+                endTimeSegment.style.display = 'inline-flex';
+                hasEnd = true;
+            } else if (endTimeSegment) {
+                endTimeSegment.style.display = 'none';
+            }
+
+            if (showServerQuality && serverQualitySegment && serverQualityValue) {
+                const meta = window.lastMeta;
+                const links = (meta && meta.links) || [];
+                const currIdx = typeof currentLinkIndex === 'number' && currentLinkIndex >= 0 ? currentLinkIndex : 0;
+                const activeLink = links[currIdx] || links.find(l => l.isActive);
+
+                const siteName = (activeLink && activeLink.source) ? activeLink.source.trim() : '';
+                const rawName = activeLink ? (activeLink.name || '') : '';
+
+                // Extract clean source provider name
+                let cleanSource = siteName;
+                if (!cleanSource && rawName) {
+                    let firstLine = rawName.split(/\r?\n/)[0].trim();
+                    firstLine = firstLine.replace(/[\p{Extended_Pictographic}\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '').trim();
+                    const bracketMatch = firstLine.match(/\[([^\]]+)\]/);
+                    if (bracketMatch) {
+                        cleanSource = bracketMatch[1].trim();
+                    } else {
+                        cleanSource = firstLine.replace(/[\s\-_•/·:]+$/g, '').replace(/^[\s\-_•/·:]+/g, '').trim();
+                    }
+                    if (cleanSource.length > 24) cleanSource = cleanSource.substring(0, 24).trim();
+                }
+                if (!cleanSource && activeLink) {
+                    cleanSource = `Source ${currIdx + 1}`;
+                }
+
+                // Standard quality resolution
+                let qualityStr = '';
+                const declaredQuality = (activeLink && typeof activeLink.quality === 'number' && activeLink.quality > 0 && activeLink.quality !== 400)
+                    ? activeLink.quality
+                    : 0;
+
+                if (declaredQuality > 0) {
+                    qualityStr = declaredQuality >= 2160 ? '4K' : `${declaredQuality}p`;
+                } else if (rawName) {
+                    const qMatch = rawName.match(/\b(2160p|4k|1440p|1080p|720p|480p|360p)\b/i);
+                    if (qMatch) {
+                        qualityStr = qMatch[1].toLowerCase() === '4k' ? '4K' : qMatch[1].toLowerCase();
+                    }
+                }
+
+                if (!qualityStr && meta && meta.resolution) {
+                    // Fallback for adaptive HLS/DASH or undeclared streams (aspect-ratio aware)
+                    const parts = meta.resolution.split('x');
+                    const w = parts[0] ? parseInt(parts[0].trim(), 10) : 0;
+                    const h = parts[1] ? parseInt(parts[1].trim(), 10) : 0;
+
+                    if (w >= 3800 || h >= 1600) qualityStr = '4K';
+                    else if (w >= 2500 || h >= 1300) qualityStr = '1440p';
+                    else if (w >= 1900 || h >= 800) qualityStr = '1080p';
+                    else if (w >= 1200 || h >= 530) qualityStr = '720p';
+                    else if (w >= 700 || h >= 400) qualityStr = '480p';
+                    else if (h > 0) qualityStr = `${h}p`;
+                }
+
+                if (!qualityStr) qualityStr = 'Auto';
+
+                const displayText = cleanSource ? `${cleanSource} • ${qualityStr}` : qualityStr;
+
+                if (serverQualityValue.innerText !== displayText) serverQualityValue.innerText = displayText;
+                serverQualitySegment.style.display = 'inline-flex';
+                hasServer = true;
+            } else if (serverQualitySegment) {
+                serverQualitySegment.style.display = 'none';
+            }
+
+            if (timeDivider1) {
+                timeDivider1.style.display = (hasClock && hasEnd) ? 'block' : 'none';
+            }
+            if (timeDivider2) {
+                timeDivider2.style.display = 'none';
+            }
+            
+            if (hasClock || hasEnd) {
+                endTimeContainer.style.display = 'inline-flex';
+            } else {
+                endTimeContainer.style.display = 'none';
+            }
+        };
+
+        window.updateClockDisplay = updateClockDisplay;
+        
+        const wasPlaying = globalIsPlaying;
+        if (s.isPlaying !== undefined) {
+            globalIsPlaying = !!s.isPlaying;
+        }
+
+        if (wasPlaying !== globalIsPlaying) {
+            playPauseBtn.classList.toggle('is-playing', globalIsPlaying);
+            if (typeof window.updatePipPlayPauseIcon === 'function') {
+                window.updatePipPlayPauseIcon();
+            }
+            updateAudioPlayPauseIcon();
+            document.body.classList.toggle('audio-playing', globalIsPlaying);
+            const eqEl = document.getElementById('audioStationEq');
+            if (eqEl) eqEl.classList.toggle('playing', globalIsPlaying);
+        }
+
+        if (s.volume !== undefined) { 
+            currentVolume = s.volume; 
+        }
+        if (s.isMuted !== undefined) {
+            applyMuteVisuals(s.isMuted === true);
+        } else if (s.volume !== undefined) {
+            applyMuteVisuals(isMuted);
+        }
+        const wasLoading = globalIsLoading;
+        if (s.isLoading !== undefined) {
+            globalIsLoading = s.isLoading;
+        }
+
+        // Ensure probing overlay is dismissed once playback is buffered and actively rendering
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        if (pOverlay && pOverlay.classList.contains('active') && !pOverlay.classList.contains('dismissing')) {
+            const isKotlinProbing = (window.lastMeta && window.lastMeta.isProbing === true);
+            const forwardBufferMs = (typeof s.bufferMs === 'number' && typeof s.positionMs === 'number') ? (s.bufferMs - s.positionMs) : 0;
+            const isBufferHealthy = forwardBufferMs >= 3000 || (typeof s.positionMs === 'number' && s.positionMs >= 400);
+            const isActivelyPlaying = globalIsPlaying || (typeof s.positionMs === 'number' && s.positionMs > 200);
+            if (!isKotlinProbing && !isAppLoading && (!s.isLoading || isBufferHealthy || isActivelyPlaying)) {
+                dismissProbingOverlay(true);
+            }
+        }
+
+        if (wasPlaying !== globalIsPlaying || wasLoading !== globalIsLoading) {
+            evaluateUIStates();
+        }
+
+        evaluateResumeOverlay();
+    };
+
+    // Expose globally so input handlers can use it
+    window.renderFilteredEpisodes = (selectedSeason) => renderFilteredEpisodes(selectedSeason);
+
+    let activeServerFilter = 'All';
+
+    window.setServerFilter = (filterVal) => {
+        activeServerFilter = filterVal;
+        renderFilteredServers();
+    };
+
+    const renderFilteredServers = () => {
+        const filtered = linksData.filter(l => {
+            if (activeServerFilter === 'All') return true;
+            
+            const isHls = l.isM3u8 || (l.name || '').toLowerCase().includes('hls') || (l.url || '').includes('.m3u8');
+            const isDash = l.isDash || (l.name || '').toLowerCase().includes('dash') || (l.url || '').includes('.mpd');
+            
+            if (activeServerFilter === 'Auto / HLS') return isHls || isDash;
+            if (activeServerFilter === 'MP4 (Downloadable)') return !isHls && !isDash;
+            
+            const qVal = l.quality;
+            const isAutoQuality = !qVal || qVal === 400 || qVal <= 0;
+            const qStr = isAutoQuality ? '' : String(qVal).toLowerCase();
+            if (activeServerFilter === '4K') return qStr === '2160' || qStr === '4k';
+            if (activeServerFilter === '1080p') return qStr === '1080';
+            if (activeServerFilter === '720p') return qStr === '720';
+            if (activeServerFilter === '480p / SD') return qStr === '480' || qStr.includes('sd');
+            
+            return false;
+        });
+
+        const serverSub = document.getElementById('serverSubtitle');
+        if (serverSub) serverSub.innerText = `${filtered.length} source${filtered.length !== 1 ? 's' : ''} available`;
+        
+        // Build available chips based on raw linksData
+        const availableChips = new Set(['All']);
+        linksData.forEach(l => {
+            const isHls = l.isM3u8 || (l.name || '').toLowerCase().includes('hls') || (l.url || '').includes('.m3u8');
+            const isDash = l.isDash || (l.name || '').toLowerCase().includes('dash') || (l.url || '').includes('.mpd');
+            if (isHls || isDash) availableChips.add('Auto / HLS');
+            else availableChips.add('MP4 (Downloadable)');
+            
+            const qVal = l.quality;
+            const isAutoQuality = !qVal || qVal === 400 || qVal <= 0;
+            const qStr = isAutoQuality ? '' : String(qVal).toLowerCase();
+            if (qStr === '2160' || qStr === '4k') availableChips.add('4K');
+            else if (qStr === '1080') availableChips.add('1080p');
+            else if (qStr === '720') availableChips.add('720p');
+            else if (qStr === '480' || qStr.includes('sd')) availableChips.add('480p / SD');
+        });
+        
+        const order = ['All', '4K', '1080p', '720p', '480p / SD', 'Auto / HLS', 'MP4 (Downloadable)'];
+        const chipsHtml = order.filter(c => availableChips.has(c)).map(c => 
+            `<div class="filter-chip ${activeServerFilter === c ? 'active' : ''}" onclick="setServerFilter('${c}')">${c}</div>`
+        ).join('');
+        
+        const filterContainer = document.getElementById('filterChipsContainer');
+        if (filterContainer && filterContainer._lastChipsHtml !== chipsHtml) {
+            filterContainer.innerHTML = chipsHtml;
+            filterContainer._lastChipsHtml = chipsHtml;
+        }
+
+        const serversListElem = document.getElementById('serversList');
+        if (!serversListElem) return;
+
+        if (filtered.length === 0) {
+            serversListElem.innerHTML = `<div style="padding: 20px; text-align: center; color: rgba(255,255,255,0.5);">No sources match your filter.</div>`;
+            serversListElem._lastSignature = null;
+            return;
+        }
+
+        const failedArr = (window.lastMeta && window.lastMeta.failedLinks) || [];
+        const currentFailedJson = JSON.stringify(failedArr);
+        const listSignature = activeServerFilter + '::' + filtered.map(l => (l.url || '') + ':' + (l.name || '') + ':' + (l.quality || '') + ':' + (l.isTorrent || '') + ':' + (l.seeds || '')).join('|');
+
+        if (serversListElem._lastSignature === listSignature && serversListElem._lastFailedJson === currentFailedJson && serversListElem.children.length === filtered.length) {
+            // Update active state in-place without rebuilding DOM under hover cursor
+            const items = serversListElem.querySelectorAll('.srv-item');
+            items.forEach((item, idx) => {
+                const l = filtered[idx];
+                if (l) {
+                    if (l.isActive) {
+                        item.classList.add('active');
+                        const check = item.querySelector('.srv-check');
+                        if (check && !check.innerHTML) check.innerHTML = SVGS.check;
+                    } else {
+                        item.classList.remove('active');
+                        const check = item.querySelector('.srv-check');
+                        if (check && check.innerHTML) check.innerHTML = '';
+                    }
+                }
+            });
+            return;
+        }
+
+        serversListElem._lastSignature = listSignature;
+        serversListElem._lastFailedJson = currentFailedJson;
+
+        serversListElem.innerHTML = filtered.map(l => {
+            const failedInfo = failedArr.find(f => f.index === l.index || (f.url && f.url === l.url));
+            const isFailed = !!failedInfo;
+
+            const qVal = l.quality;
+            const isAutoQuality = !qVal || qVal === 400 || qVal <= 0;
+            const isHls = l.isM3u8 || (l.name || '').toLowerCase().includes('hls') || (l.url || '').includes('.m3u8');
+            const isDash = l.isDash || (l.name || '').toLowerCase().includes('dash') || (l.url || '').includes('.mpd');
+            
+            const qStr = isAutoQuality ? (isHls ? 'HLS' : isDash ? 'DASH' : 'Auto') : (String(qVal) + 'p');
+            const qStrLower = String(qVal || '').toLowerCase();
+            const is4K = qStrLower.includes('2160') || qStrLower.includes('4k') || qVal >= 2160;
+            const isHD = qStrLower.includes('1080') || qVal >= 1080;
+            
+            let badgeText = 'SD';
+            let badgeClass = 'sd';
+            if (isFailed) {
+                badgeText = failedInfo.reason ? (failedInfo.reason.length > 10 ? failedInfo.reason.slice(0, 8) + '…' : failedInfo.reason) : 'FAILED';
+                badgeClass = 'error';
+            } else if (l.isTorrent) {
+                badgeText = l.seeds ? `P2P · ${l.seeds}s` : 'P2P';
+                badgeClass = 'p2p';
+            } else if (is4K) {
+                badgeText = '4K';
+                badgeClass = 'uhd';
+            } else if (isHD) {
+                badgeText = '1080p';
+                badgeClass = 'fhd';
+            } else if (isAutoQuality) {
+                badgeText = isHls ? 'HLS' : isDash ? 'DASH' : 'AUTO';
+                badgeClass = 'hd';
+            }
+            
+            const urlEncoded = encodeURIComponent(l.url || '');
+            const itemClasses = ['srv-item'];
+            if (l.isActive) itemClasses.push('active');
+            if (isFailed) itemClasses.push('failed');
+
+            const cleanName = escapeHtml(l.name || ('Source ' + (l.index + 1)));
+            const tooltip = isFailed ? (failedInfo.reason || 'Playback Failed') : cleanName;
+            const showExtraQuality = qStr && qStr.toLowerCase() !== badgeText.toLowerCase() && badgeText !== '1080p' && badgeText !== '4K' && badgeText !== '720p';
+            const qualitySpan = showExtraQuality ? `<span class="srv-quality">${qStr}</span>` : '';
+
+            return `<div class="${itemClasses.join(' ')}" onclick="send('changeLink', decodeURIComponent('${urlEncoded}'));closeAllPanels();" title="${tooltip}">
+                <span class="srv-check">${l.isActive ? SVGS.check : ''}</span>
+                <svg class="srv-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M4 1h16c.55 0 1 .45 1 1v4c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1V2c0-.55.45-1 1-1zm0 8h16c.55 0 1 .45 1 1v4c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1zm0 8h16c.55 0 1 .45 1 1v4c0 .55-.45 1-1 1H4c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1z"/><circle cx="19" cy="4" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="20" r="1" fill="currentColor"/></svg>
+                <span class="srv-name">${cleanName}</span>
+                ${qualitySpan}
+                <span class="srv-badge ${badgeClass}">${badgeText}</span>
+            </div>`;
+        }).join('');
+    };
+    window.renderFilteredServers = renderFilteredServers;
+
+    let currentSelectedSeason = null;
+    let currentSelectedChunk = 0;
+    const EPISODE_CHUNK_SIZE = 25;
+
+    const renderFilteredEpisodes = (selectedSeason, targetChunk = -1, shouldScroll = false) => {
+        currentSelectedSeason = selectedSeason;
+        const filtered = episodesData.filter(ep => {
+            const epSeason = ep.season !== undefined && ep.season !== null ? ep.season : 1;
+            return epSeason === selectedSeason;
+        });
+
+        const chunkWrap = document.getElementById('chunkSelectWrap');
+        const chunkBar = document.getElementById('chunkChipsBar');
+
+        let episodesToRender = filtered;
+        if (filtered.length > EPISODE_CHUNK_SIZE) {
+            if (chunkWrap) chunkWrap.style.display = 'block';
+            const totalChunks = Math.ceil(filtered.length / EPISODE_CHUNK_SIZE);
+            
+            if (targetChunk < 0) {
+                const activeIdx = filtered.findIndex(e => e.isActive);
+                currentSelectedChunk = activeIdx >= 0 ? Math.floor(activeIdx / EPISODE_CHUNK_SIZE) : 0;
+            } else {
+                currentSelectedChunk = targetChunk;
+            }
+
+            if (chunkBar) {
+                const chunkHtml = Array.from({ length: totalChunks }, (_, cIdx) => {
+                    const start = cIdx * EPISODE_CHUNK_SIZE + 1;
+                    const end = Math.min((cIdx + 1) * EPISODE_CHUNK_SIZE, filtered.length);
+                    const isChunkActive = cIdx === currentSelectedChunk;
+                    return `<button class="chunk-chip ${isChunkActive ? 'active' : ''}" onclick="renderFilteredEpisodes(${selectedSeason}, ${cIdx}, false)">
+                        ${start}–${end}
+                    </button>`;
+                }).join('');
+                if (chunkBar._lastChunkHtml !== chunkHtml) {
+                    chunkBar.innerHTML = chunkHtml;
+                    chunkBar._lastChunkHtml = chunkHtml;
+                }
+            }
+
+            const startIdx = currentSelectedChunk * EPISODE_CHUNK_SIZE;
+            episodesToRender = filtered.slice(startIdx, startIdx + EPISODE_CHUNK_SIZE);
+        } else {
+            if (chunkWrap) chunkWrap.style.display = 'none';
+            currentSelectedChunk = 0;
+        }
+
+        const listEl = document.getElementById('episodesList');
+        if (listEl) {
+            const isAudioActive = !!(document.body.classList.contains('audio-mode-active') || (window.lastMeta && window.lastMeta.isAudioMode));
+            const epSignature = `${selectedSeason}:${currentSelectedChunk}:${isAudioActive}:${episodesToRender.map(e => `${e.id}:${e.isActive}:${e.isSeen}:${Math.round(e.watchedPercentage || 0)}`).join('|')}`;
+            if (listEl._lastEpSignature === epSignature && listEl.children.length === episodesToRender.length) {
+                // Update active episode progress fill in-place without destroying DOM under hover cursor
+                const activeEp = episodesToRender.find(e => e.isActive);
+                if (activeEp) {
+                    const activeProgEl = listEl.querySelector('.ep-card-desk.active .ep-card-prog-fill');
+                    if (activeProgEl) {
+                        let pct = 0;
+                        if (typeof durationMs === 'number' && durationMs > 0 && typeof currentPosMs === 'number' && currentPosMs > 0) {
+                            pct = Math.min(100, Math.max(0, Math.round((currentPosMs / durationMs) * 100)));
+                        } else if (typeof activeEp.watchedPercentage === 'number') {
+                            pct = Math.min(100, Math.max(0, Math.round(activeEp.watchedPercentage)));
+                        }
+                        activeProgEl.style.width = `${pct}%`;
+                        if (pct >= 90) {
+                            activeProgEl.classList.add('completed');
+                            const activeCard = listEl.querySelector('.ep-card-desk.active');
+                            if (activeCard) activeCard.classList.add('watched');
+                        }
+                    }
+                }
+                return;
+            }
+            listEl._lastEpSignature = epSignature;
+            listEl.innerHTML = episodesToRender.map((ep, i) => {
+                const num = ep.episode || (i + 1 + (currentSelectedChunk * EPISODE_CHUNK_SIZE));
+                const epIdEncoded = encodeURIComponent(ep.id || '');
+                const epTitleEscaped = (ep.title || ('Episode ' + num)).replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                const cleanDesc = (ep.description || '')
+                    .replace(/\|\|DATE:[^|]*\|\|/gi, '')
+                    .trim();
+                const descEscaped = cleanDesc ? cleanDesc.replace(/</g, "&lt;").replace(/>/g, "&gt;") : '';
+
+                let metaText = '';
+                if (isAudioActive) {
+                    metaText = ep.runTime ? `${ep.runTime}m` : '';
+                } else {
+                    const sNum = (ep.season !== undefined && ep.season !== null) ? ep.season : 1;
+                    metaText = `S${sNum} E${num}${ep.runTime ? ' • ' + ep.runTime + 'm' : ''}`;
+                }
+
+                const thumbImg = ep.posterUrl 
+                    ? `<img src="${ep.posterUrl}" class="ep-card-desk-thumb" alt="${epTitleEscaped}" decoding="async" onerror="this.style.display='none'">` 
+                    : '';
+
+                let progressPercent = 0;
+                let isCompletedWatched = false;
+                if (ep.isActive) {
+                    if (typeof durationMs === 'number' && durationMs > 0 && typeof currentPosMs === 'number' && currentPosMs > 0) {
+                        progressPercent = Math.min(100, Math.max(0, Math.round((currentPosMs / durationMs) * 100)));
+                    } else if (typeof ep.watchedPercentage === 'number') {
+                        progressPercent = Math.min(100, Math.max(0, Math.round(ep.watchedPercentage)));
+                    }
+                    if (progressPercent >= 90) {
+                        isCompletedWatched = true;
+                    }
+                } else {
+                    if (typeof ep.watchedPercentage === 'number') {
+                        progressPercent = Math.min(100, Math.max(0, Math.round(ep.watchedPercentage)));
+                    }
+                    if (progressPercent >= 90 || ep.isSeen) {
+                        isCompletedWatched = true;
+                    }
+                }
+
+                const isLocked = !!(ep.isLocked || (ep.id && (ep.id.startsWith('unreleased_') || ep.id.startsWith('synthetic_'))));
+                const lockText = ep.releaseDateText || 'Upcoming';
+
+                let watchMeta = '';
+                if (ep.isActive) {
+                    if (progressPercent > 0) {
+                        watchMeta = ` • ${progressPercent}% watched`;
+                    }
+                } else if (isCompletedWatched) {
+                    watchMeta = ` • Watched`;
+                } else if (progressPercent > 0) {
+                    watchMeta = ` • ${progressPercent}% watched`;
+                }
+
+                const thumbOverlay = isLocked
+                    ? `<div class="ep-card-locked-badge"><svg viewBox="0 0 24 24" width="11" height="11" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg> ${lockText}</div>`
+                    : (!ep.isActive ? `<div class="ep-card-play-hover"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M8 5v14l11-7z"/></svg></div>` : '');
+
+                const watchedBadge = (isCompletedWatched && !ep.isActive && !isLocked)
+                    ? `<div class="ep-card-watched-badge"><svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg> WATCHED</div>`
+                    : '';
+
+                const lockedBadge = isLocked
+                    ? `<div class="ep-card-locked-tag"><svg viewBox="0 0 24 24" width="10" height="10" fill="currentColor"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></svg> UNRELEASED</div>`
+                    : '';
+
+                const progBar = (!isLocked && (ep.isActive || progressPercent > 0 || isCompletedWatched))
+                    ? `<div class="ep-card-prog-bar"><div class="ep-card-prog-fill ${isCompletedWatched ? 'completed' : ''}" style="width: ${isCompletedWatched ? 100 : progressPercent}%;"></div></div>`
+                    : '';
+
+                const cardClickHandler = isLocked
+                    ? `showHudToast('Episode is unreleased (${lockText.replace(/'/g, "\\\'")})')`
+                    : `send('loadEpisode', decodeURIComponent('${epIdEncoded}'));closeAllPanels();`;
+
+                const topStatusBadge = ep.isActive
+                    ? `<div class="ep-card-now-playing">NOW PLAYING</div>`
+                    : (isLocked ? lockedBadge : watchedBadge);
+
+                return `<div class="ep-card-desk ${ep.isActive ? 'active' : ''} ${isCompletedWatched ? 'watched' : ''} ${isLocked ? 'locked' : ''}" onclick="${cardClickHandler}">
+                    <div class="ep-card-desk-thumb-wrap">
+                        <svg class="ep-card-desk-thumb-fallback" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        ${thumbImg}
+                        ${thumbOverlay}
+                    </div>
+                    <div class="ep-card-desk-info">
+                        ${topStatusBadge}
+                        <div class="ep-card-desk-title">${epTitleEscaped}</div>
+                        <div class="ep-card-desk-meta">${metaText}${watchMeta}</div>
+                        ${progBar}
+                        ${descEscaped ? `<div class="ep-card-desk-desc">${descEscaped}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        if (shouldScroll) {
+            setTimeout(() => {
+                const active = document.querySelector('#episodesList .ep-card-desk.active') || document.querySelector('#episodesList .ep-card.active');
+                if (active) active.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }, 80);
+        }
+    };
+    window.renderFilteredEpisodes = renderFilteredEpisodes;
+
+    const onSeasonChipClick = (s) => {
+        const seasonNum = parseInt(s, 10);
+        currentSelectedSeason = seasonNum;
+        document.querySelectorAll('#seasonChipsBar .ep-season-btn').forEach(btn => {
+            const btnSeason = parseInt(btn.getAttribute('data-season'), 10);
+            btn.classList.toggle('active', btnSeason === seasonNum);
+        });
+        requestAnimationFrame(() => {
+            const listEl = document.getElementById('episodesList');
+            if (listEl) listEl.scrollTop = 0;
+            const contentEl = document.querySelector('.ep-drawer-content');
+            if (contentEl) contentEl.scrollTop = 0;
+            renderFilteredEpisodes(seasonNum, 0);
+        });
+    };
+    window.onSeasonChipClick = onSeasonChipClick;
+
+    const triggerMaturityAdvisory = () => {
+        if (hasShownMaturityAdvisoryThisSession) return;
+        const meta = window.lastMeta;
+        if (!meta) return;
+        const banner = document.getElementById('maturityAdvisoryBanner');
+        const badge = document.getElementById('advisoryRatingBadge');
+        const reasons = document.getElementById('advisoryReasonsText');
+        const subtext = document.getElementById('advisorySubtext');
+        if (!banner || !badge || !reasons || !subtext) return;
+
+        const rating = (meta.contentRating && meta.contentRating.trim().length > 0) ? meta.contentRating.trim().toUpperCase() : '';
+        const tags = Array.isArray(meta.tags) ? meta.tags : [];
+
+        // Relevant content advisory keywords
+        const advisoryKeywords = ['GORE', 'VIOLENCE', 'HORROR', 'PSYCHOLOGICAL', 'THRILLER', 'CRIME', 'LANGUAGE', 'NUDITY', 'SUBSTANCE', 'MATURE', 'DARK', 'ACTION', 'DRAMA', 'SCI-FI', 'FANTASY', 'ADVENTURE', 'ROMANCE'];
+        const matchedAdvisories = tags.map(t => String(t).toUpperCase()).filter(t => advisoryKeywords.some(k => t.includes(k)));
+
+        let reasonsList = matchedAdvisories.length > 0 ? matchedAdvisories.slice(0, 3) : tags.slice(0, 3).map(t => String(t).toUpperCase());
+
+        // Only show if we have either a rating or genres/tags
+        if (!rating && reasonsList.length === 0) return;
+
+        const displayRating = rating || '16+';
+        badge.innerText = displayRating;
+
+        const isMature = ['18+', 'TV-MA', 'R', 'RATED R', 'NC-17', 'MA', '18', 'GORE', 'HORROR'].includes(displayRating);
+        if (reasonsList.length > 0) {
+            reasons.innerText = reasonsList.join(' • ');
+        } else {
+            reasons.innerText = isMature ? 'VIOLENCE • LANGUAGE • MATURE THEMES' : 'GENERAL THEMES';
+        }
+
+        subtext.innerText = isMature ? 'Viewer discretion is advised' : 'Suitable for broad audiences';
+
+        hasShownMaturityAdvisoryThisSession = true;
+
+        if (maturityAdvisoryTimer) {
+            clearTimeout(maturityAdvisoryTimer);
+            maturityAdvisoryTimer = null;
+        }
+
+        banner.classList.add('active');
+
+        maturityAdvisoryTimer = setTimeout(() => {
+            banner.classList.remove('active');
+            maturityAdvisoryTimer = null;
+        }, 5500);
+    };
+    window.triggerMaturityAdvisory = triggerMaturityAdvisory;
+
+    const handleMetadataUpdate = (meta) => {
+        window.lastMeta = meta;
+        // 1. Session & State Reset
+        // Detect a genuinely new playback session (new title OR new episode).
+        // IMPORTANT: currentLinkIndex changes are NOT a new session — they happen
+        // during error recovery (trying next source) within the same episode.
+        const activeEp = (meta.episodes || []).find(e => e.isActive);
+        const activeId = activeEp ? activeEp.id : '';
+        if (meta.title) {
+            // A genuinely new playback session occurs on initial startup or when switching to a different episode.
+            // Spurious resets MUST NOT be triggered during playback, when the episode list asynchronously arrives,
+            // or when the title string is enriched/updated by metadata sources.
+            const isInitialSession = !currentTitle;
+            const isEpisodeChange = currentEpisodeId !== '' && activeId !== '' && currentEpisodeId !== activeId;
+            const isNewSession = isInitialSession || isEpisodeChange;
+            const isAlreadyPlaying = globalIsPlaying || currentPosMs > 50 || window.hasDismissedInitialProbing;
+
+            if (isNewSession) {
+                if (isAlreadyPlaying && isInitialSession) {
+                    userDismissedProbing = true;
+                    window.hasDismissedInitialProbing = true;
+                    dismissProbingOverlay(true);
+                } else {
+                    window.hasDismissedInitialProbing = false;
+                    userDismissedProbing = false;
+                    // *** Atomically reset ALL state so stale timers/overlays can't race ***
+                    hardResetAllOverlays();
+                }
+            }
+            currentTitle = meta.title;
+            if (activeId) currentEpisodeId = activeId;
+            // Always track the link index, but it doesn't trigger a session reset.
+            if (meta.currentLinkIndex !== undefined) currentLinkIndex = meta.currentLinkIndex;
+
+            if (isNewSession) {
+
+                // Immediately pre-fill the probing screen with the NEW episode's data
+                // so there is zero window where old/stale data is visible on screen.
+                const pTitle = document.getElementById('linkProbingTitle');
+                const pSubtitle = document.getElementById('linkProbingSubtitle');
+                const pLogo = document.getElementById('linkProbingLogo');
+                const pStatus = document.getElementById('linkProbingStatus');
+                const pBackdrop = document.getElementById('linkProbingBackdrop');
+                const pList = document.getElementById('linkProbingList');
+
+                // Clear stale link list only on genuine episode switch if no incoming links exist.
+                // Otherwise, keyed reconciliation preserves existing DOM nodes cleanly.
+                if (isEpisodeChange && (!meta.links || meta.links.length === 0) && pList) {
+                    pList.innerHTML = '';
+                }
+
+                // Reset status text
+                if (pStatus) pStatus.innerText = 'Discovering streaming sources…';
+
+                // Update title, subtitle, and logo immediately
+                if (activeEp) {
+                    const s = activeEp.season !== undefined && activeEp.season !== null ? activeEp.season : 1;
+                    const ep = activeEp.episode;
+                    const epTitle = activeEp.title ? activeEp.title : `Episode ${ep}`;
+                    let showTitle = meta.title || '';
+                    if (showTitle.includes(' - ')) {
+                        showTitle = showTitle.split(' - ')[0].trim();
+                    }
+                    if (meta.logoUrl && meta.logoUrl.trim().length > 0) {
+                        if (pLogo) {
+                            pLogo.onerror = () => {
+                                pLogo.style.display = 'none';
+                                if (pTitle) { pTitle.innerText = showTitle; pTitle.style.display = 'block'; }
+                            };
+                            pLogo.src = meta.logoUrl;
+                            pLogo.style.display = 'block';
+                        }
+                        if (pTitle) pTitle.style.display = 'none';
+                    } else {
+                        if (pLogo) pLogo.style.display = 'none';
+                        if (pTitle) { pTitle.innerText = showTitle; pTitle.style.display = 'block'; }
+                    }
+                    if (pSubtitle) {
+                        pSubtitle.innerText = `S${s}:E${ep} • ${epTitle}`;
+                        pSubtitle.style.display = 'block';
+                    }
+                } else {
+                    if (meta.logoUrl && meta.logoUrl.trim().length > 0) {
+                        if (pLogo) {
+                            pLogo.onerror = () => {
+                                pLogo.style.display = 'none';
+                                if (pTitle) { pTitle.innerText = meta.title || ''; pTitle.style.display = 'block'; }
+                            };
+                            pLogo.src = meta.logoUrl;
+                            pLogo.style.display = 'block';
+                        }
+                        if (pTitle) pTitle.style.display = 'none';
+                    } else {
+                        if (pLogo) pLogo.style.display = 'none';
+                        if (pTitle) { pTitle.innerText = meta.title || ''; pTitle.style.display = 'block'; }
+                    }
+                    if (pSubtitle) pSubtitle.style.display = 'none';
+                }
+
+                // Update backdrop to the new episode's art directly without flashing
+                const newBackdrop = meta.backdropUrl || (activeEp ? activeEp.posterUrl : '');
+                if (pBackdrop && newBackdrop && pBackdrop.src !== newBackdrop) {
+                    pBackdrop.src = newBackdrop;
+                }
+            }
+              let niceTitle = meta.title;
+            if (niceTitle) {
+                const parts = niceTitle.split(' - ');
+                // If it looks like "Show Name - S1E1 - Show Name", drop the repeated end part.
+                if (parts.length >= 3 && parts[0].trim() === parts[parts.length - 1].trim()) {
+                    parts.pop();
+                    niceTitle = parts.join(' - ');
+                }
+            }
+            titleDisplay.innerText = niceTitle || "CloudStream Player";
+            document.title = meta.title;
+            if (typeof window.updateClockDisplay === 'function') window.updateClockDisplay();
+        }
+
+        if (meta.startPositionMs !== undefined && !resumeHandled) {
+            pendingResumeMs = meta.startPositionMs;
+            evaluateResumeOverlay();
+        }
+
+        // Populate Pause Info Overlay
+        const pauseLogo = document.getElementById('pauseInfoLogo');
+        const pauseFallback = document.getElementById('pauseInfoTitleFallback');
+        const pauseEp = document.getElementById('pauseInfoEpisode');
+        const pausePlot = document.getElementById('pauseInfoPlot');
+        const pauseYear = document.getElementById('pauseInfoYear');
+        const pauseTags = document.getElementById('pauseInfoTags');
+        const pauseMeta = document.getElementById('pauseInfoMeta');
+        
+        if (meta.logoUrl && meta.logoUrl.trim().length > 0) {
+            if (pauseLogo) {
+                pauseLogo.onerror = () => {
+                    pauseLogo.style.display = 'none';
+                    if (pauseFallback) { pauseFallback.innerText = meta.title || ''; pauseFallback.style.display = 'block'; }
+                };
+                pauseLogo.src = meta.logoUrl;
+                pauseLogo.style.display = 'block';
+            }
+            if (pauseFallback) pauseFallback.style.display = 'none';
+        } else if (meta.title) {
+            if (pauseLogo) pauseLogo.style.display = 'none';
+            if (pauseFallback) { pauseFallback.innerText = meta.title; pauseFallback.style.display = 'block'; }
+        }
+
+        const activeEpInfo = (meta.episodes || []).find(ep => ep.isActive);
+        if (activeEpInfo) {
+            const s = activeEpInfo.season !== undefined && activeEpInfo.season !== null ? activeEpInfo.season : 1;
+            const ep = activeEpInfo.episode;
+            const epTitle = activeEpInfo.title ? activeEpInfo.title : `Episode ${ep}`;
+            pauseEp.innerText = `S${s}:E${ep} • ${epTitle}`;
+            pauseEp.style.display = 'block';
+        } else {
+            pauseEp.style.display = 'none';
+        }
+
+        if (meta.plot || (activeEpInfo && activeEpInfo.description)) {
+            const rawPlot = (activeEpInfo && activeEpInfo.description) ? activeEpInfo.description : meta.plot;
+            pausePlot.innerText = rawPlot.replace(/\|\|DATE:.*?\|\|/g, '').trim();
+            pausePlot.style.display = '-webkit-box';
+        } else {
+            pausePlot.style.display = 'none';
+        }
+
+        let hasMeta = false;
+
+        const pauseRating = document.getElementById('pauseInfoRating');
+        if (pauseRating) {
+            if (meta.contentRating && meta.contentRating.trim().length > 0) {
+                pauseRating.innerText = meta.contentRating.trim().toUpperCase();
+                pauseRating.style.display = 'inline-block';
+                hasMeta = true;
+            } else {
+                pauseRating.style.display = 'none';
+            }
+        }
+
+        const pauseScore = document.getElementById('pauseInfoScore');
+        const pauseScoreText = document.getElementById('pauseInfoScoreText');
+        const activeEpForScore = (meta.episodes || []).find(e => e.isActive);
+        const epScoreForPause = activeEpForScore ? activeEpForScore.score : null;
+        const effectiveScoreForPause = (epScoreForPause && epScoreForPause > 0) ? epScoreForPause : (meta.rating && meta.rating > 0 ? meta.rating : null);
+
+        if (effectiveScoreForPause && pauseScore && pauseScoreText) {
+            pauseScoreText.innerText = effectiveScoreForPause.toFixed(1);
+            pauseScore.style.display = 'inline-flex';
+            hasMeta = true;
+        } else if (pauseScore) {
+            pauseScore.style.display = 'none';
+        }
+
+        if (meta.year) {
+            pauseYear.innerText = meta.year;
+            pauseYear.style.display = 'inline-block';
+            hasMeta = true;
+        } else {
+            pauseYear.style.display = 'none';
+        }
+
+        if (meta.tags && meta.tags.length > 0) {
+            pauseTags.innerText = meta.tags.slice(0, 3).join(' • ');
+            pauseTags.style.display = 'inline-block';
+            hasMeta = true;
+        } else {
+            pauseTags.style.display = 'none';
+        }
+
+        pauseMeta.style.display = hasMeta ? 'flex' : 'none';
+
+        // Populate Starring Cast Overlay
+        currentCastList = (meta.actors || []).filter(actor => {
+            const r = (actor.role || '').trim().toLowerCase();
+            return r !== 'director' && r !== 'creator' && r !== 'writer' && r !== 'producer' && r !== 'executive producer';
+        });
+
+        window.setPauseCastMode = function(mode) {
+            pauseCastMode = (mode === 'va') ? 'va' : 'character';
+            const charBtn = document.getElementById('pauseCastCharBtn');
+            const vaBtn = document.getElementById('pauseCastVABtn');
+            if (charBtn && vaBtn) {
+                if (pauseCastMode === 'va') {
+                    charBtn.classList.remove('active');
+                    vaBtn.classList.add('active');
+                } else {
+                    charBtn.classList.add('active');
+                    vaBtn.classList.remove('active');
+                }
+            }
+            renderPauseCastOverlay();
+        };
+
+        window.togglePauseCastMode = function(e) {
+            if (e) e.stopPropagation();
+            window.setPauseCastMode(pauseCastMode === 'character' ? 'va' : 'character');
+        };
+
+        function getCastCardInfo(actor, isVaMode, isAnimationCast) {
+            const role = (actor.role || '').trim();
+            const hasVoiceActor = actor.voiceActorName && actor.voiceActorName.trim().length > 0;
+            const isVoiceExplicit = /\(voice(?:\s+actor)?\)/i.test(role);
+            const isAnimation = isAnimationCast || actor.isAnime || hasVoiceActor || isVoiceExplicit;
+
+            if (hasVoiceActor) {
+                if (isVaMode) {
+                    const charName = actor.name || '';
+                    return {
+                        badge: 'VOICE ACTOR',
+                        mainName: actor.voiceActorName,
+                        mainImg: actor.voiceActorImage || actor.image,
+                        secName: actor.name,
+                        secImg: actor.image,
+                        subline: charName ? `Voice of ${charName}` : (role ? `as ${role}` : ''),
+                    };
+                } else {
+                    return {
+                        badge: 'CHARACTER',
+                        mainName: actor.name || 'Unknown',
+                        mainImg: actor.image,
+                        secName: actor.voiceActorName,
+                        secImg: actor.voiceActorImage,
+                        subline: `VA: ${actor.voiceActorName}`,
+                    };
+                }
+            }
+
+            if (isVoiceExplicit || (isAnimation && role.length > 0)) {
+                const cleanChar = role.replace(/\s*\((?:voice|voice\s+actor)\)/i, '').trim();
+                return {
+                    badge: 'VOICE ACTOR',
+                    mainName: actor.name || 'Unknown',
+                    mainImg: actor.image,
+                    secName: null,
+                    secImg: null,
+                    subline: cleanChar ? `Voice of ${cleanChar}` : (role ? `as ${role}` : ''),
+                };
+            }
+
+            // Live-action
+            let subline = '';
+            if (role.length > 0) {
+                subline = role.toLowerCase().startsWith('as ') ? role : `as ${role}`;
+            }
+            return {
+                badge: 'STARRING CAST',
+                mainName: actor.name || 'Unknown',
+                mainImg: actor.image,
+                secName: null,
+                secImg: null,
+                subline: subline,
+            };
+        }
+
+        function renderPauseCastOverlay() {
+            const pauseCast = document.getElementById('pauseInfoCast');
+            const castListEl = document.getElementById('pauseInfoCastList');
+            const starringLabel = document.getElementById('pauseInfoStarringLabel');
+            const animeSwitchEl = document.getElementById('pauseCastAnimeSwitch');
+            const showcaseEl = document.getElementById('pauseCastShowcase');
+            const posterEl = document.getElementById('pauseCastShowcasePoster');
+            const fallbackEl = document.getElementById('pauseCastShowcaseFallback');
+            const nameEl = document.getElementById('pauseCastShowcaseName');
+            const roleEl = document.getElementById('pauseCastShowcaseRole');
+            const showcaseBadge = showcaseEl ? showcaseEl.querySelector('.pause-cast-showcase-badge') : null;
+
+            if (!castListEl) return;
+
+            const castSignature = `${pauseCastMode}:${(currentCastList || []).map(a => `${a.name}:${a.role}:${a.voiceActorName || ''}:${a.image || ''}`).join('|')}`;
+            if (castListEl._lastCastSignature === castSignature && castListEl.children.length === Math.min((currentCastList || []).length, 6)) {
+                if (pauseCast) pauseCast.style.display = 'flex';
+                return;
+            }
+            castListEl._lastCastSignature = castSignature;
+            castListEl.innerHTML = '';
+
+            if (!currentCastList || currentCastList.length === 0) {
+                if (pauseCast) pauseCast.style.display = 'none';
+                if (showcaseEl) showcaseEl.classList.remove('active');
+                return;
+            }
+
+            const hasDualCast = currentCastList.some(actor => actor.voiceActorName && actor.voiceActorName.trim().length > 0);
+            const isAnimationCast = currentCastList.some(actor => actor.isAnime || hasDualCast || (actor.role && /\(voice(?:\s+actor)?\)/i.test(actor.role)));
+
+            if (animeSwitchEl) {
+                animeSwitchEl.style.display = hasDualCast ? 'inline-flex' : 'none';
+            }
+            if (starringLabel) {
+                starringLabel.textContent = isAnimationCast ? 'VOICE CAST' : 'STARRING';
+            }
+
+            const charBtn = document.getElementById('pauseCastCharBtn');
+            const vaBtn = document.getElementById('pauseCastVABtn');
+            if (charBtn && vaBtn) {
+                if (pauseCastMode === 'va') {
+                    charBtn.classList.remove('active');
+                    vaBtn.classList.add('active');
+                } else {
+                    charBtn.classList.add('active');
+                    vaBtn.classList.remove('active');
+                }
+            }
+
+            if (showcaseEl && !showcaseEl.dataset.bound) {
+                showcaseEl.dataset.bound = 'true';
+                showcaseEl.addEventListener('mouseenter', () => {
+                    if (window._castShowcaseHideTimer) {
+                        clearTimeout(window._castShowcaseHideTimer);
+                        window._castShowcaseHideTimer = null;
+                    }
+                });
+                showcaseEl.addEventListener('mouseleave', () => {
+                    if (window._castShowcaseHideTimer) clearTimeout(window._castShowcaseHideTimer);
+                    window._castShowcaseHideTimer = setTimeout(() => {
+                        if (showcaseEl) showcaseEl.classList.remove('active');
+                    }, 250);
+                });
+            }
+
+            const showActorInShowcase = (actor) => {
+                if (!actor || !showcaseEl || !nameEl) return;
+                if (window._castShowcaseHideTimer) {
+                    clearTimeout(window._castShowcaseHideTimer);
+                    window._castShowcaseHideTimer = null;
+                }
+
+                const info = getCastCardInfo(actor, pauseCastMode === 'va', isAnimationCast);
+                const initial = (info.mainName[0] || '?').toUpperCase();
+
+                nameEl.textContent = info.mainName;
+
+                if (roleEl) {
+                    roleEl.textContent = info.subline;
+                    roleEl.style.display = roleEl.textContent ? 'block' : 'none';
+                }
+
+                if (showcaseBadge) {
+                    showcaseBadge.textContent = info.badge;
+                }
+
+                if (info.mainImg && info.mainImg.trim().length > 0) {
+                    if (posterEl) {
+                        posterEl.src = info.mainImg;
+                        posterEl.alt = info.mainName;
+                        posterEl.style.display = 'block';
+                        posterEl.onerror = () => {
+                            posterEl.style.display = 'none';
+                            if (fallbackEl) {
+                                fallbackEl.textContent = initial;
+                                fallbackEl.style.display = 'flex';
+                            }
+                        };
+                    }
+                    if (fallbackEl) fallbackEl.style.display = 'none';
+                } else {
+                    if (posterEl) {
+                        posterEl.removeAttribute('src');
+                        posterEl.style.display = 'none';
+                    }
+                    if (fallbackEl) {
+                        fallbackEl.textContent = initial;
+                        fallbackEl.style.display = 'flex';
+                    }
+                }
+
+                showcaseEl.classList.add('active');
+            };
+
+            currentCastList.slice(0, 6).forEach(actor => {
+                const card = document.createElement('div');
+                card.className = 'pause-cast-card';
+
+                const isVaMode = (pauseCastMode === 'va');
+                const info = getCastCardInfo(actor, isVaMode, isAnimationCast);
+
+                const safeMainName = escapeHtml(info.mainName);
+                const initial = (info.mainName || '?')[0].toUpperCase();
+
+                let avatarHtml = '';
+                if (info.mainImg && info.mainImg.trim().length > 0) {
+                    avatarHtml = `<img class="pause-cast-avatar" src="${info.mainImg}" alt="${safeMainName}" onerror="this.outerHTML='<div class=\\\'pause-cast-avatar-fallback\\\'>${initial}</div>'" />`;
+                } else {
+                    avatarHtml = `<div class="pause-cast-avatar-fallback">${initial}</div>`;
+                }
+
+                let badgeHtml = '';
+                const badgeTitle = isVaMode ? 'Click to show Character' : 'Click to show Voice Cast';
+                if (info.secImg && info.secImg.trim().length > 0) {
+                    badgeHtml = `<img class="pause-cast-va-badge" src="${info.secImg}" alt="${escapeHtml(info.secName || '')}" title="${badgeTitle}" onclick="window.togglePauseCastMode(event)" />`;
+                } else if (info.secName && info.secName.trim().length > 0) {
+                    const icon = isVaMode ? '🎭' : '🎙';
+                    badgeHtml = `<div class="pause-cast-va-badge-icon" title="${badgeTitle}" onclick="window.togglePauseCastMode(event)">${icon}</div>`;
+                }
+
+                const roleHtml = info.subline ? `<div class="pause-cast-role">${escapeHtml(info.subline)}</div>` : '';
+
+                card.innerHTML = `
+                    <div class="pause-cast-avatar-wrap" ${hasDualCast ? `title="${badgeTitle}" onclick="window.togglePauseCastMode(event)"` : ''}>
+                        ${avatarHtml}
+                        ${badgeHtml}
+                    </div>
+                    <div class="pause-cast-info">
+                        <div class="pause-cast-name">${safeMainName}</div>
+                        ${roleHtml}
+                    </div>
+                `;
+
+                card.addEventListener('mouseenter', () => {
+                    showActorInShowcase(actor);
+                });
+                card.addEventListener('mouseleave', () => {
+                    if (window._castShowcaseHideTimer) clearTimeout(window._castShowcaseHideTimer);
+                    window._castShowcaseHideTimer = setTimeout(() => {
+                        if (showcaseEl) showcaseEl.classList.remove('active');
+                    }, 250);
+                });
+
+                castListEl.appendChild(card);
+            });
+
+            if (pauseCast) pauseCast.style.display = 'flex';
+        }
+
+        // Link Probing Overlay Logic
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const isProbingActive = pOverlay && pOverlay.classList.contains('active') && !pOverlay.classList.contains('dismissing');
+
+        // Pause cast overlay is never visible during probing — skip DOM work to avoid compositor invalidation.
+        if (!isProbingActive) {
+            renderPauseCastOverlay();
+            triggerMaturityAdvisory();
+        }
+        const pBackdrop = document.getElementById('linkProbingBackdrop');
+        const pLogo = document.getElementById('linkProbingLogo');
+        const pTitle = document.getElementById('linkProbingTitle');
+        const pList = document.getElementById('linkProbingList');
+        const pContent = document.getElementById('linkProbingContent');
+        const pStatus = document.getElementById('linkProbingStatus');
+        const pToggleBtn = document.getElementById('probingToggleDetailsBtn');
+
+        // Setup Persistent Eye Toggle if not already bound
+        if (pToggleBtn && !pToggleBtn.dataset.bound) {
+            pToggleBtn.dataset.bound = 'true';
+            pToggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const currState = localStorage.getItem('cs3_show_probing_details') === 'true';
+                const newState = !currState;
+                localStorage.setItem('cs3_show_probing_details', newState ? 'true' : 'false');
+                applyProbingListVisibility(newState);
+            });
+        }
+
+        if (meta.isExhausted === true) {
+            userDismissedProbing = false;
+        }
+
+        if (meta.isProbing === true && !userDismissedProbing) {
+            // Only re-show the overlay if it isn't already mid-dismiss or dismissed.
+            if (!pOverlay.classList.contains('dismissing')) {
+                if (window.probingDismissTimer) clearTimeout(window.probingDismissTimer);
+                if (!pOverlay.classList.contains('active')) {
+                    clearTimeout(hideTimer);
+                    document.body.classList.remove('hidden-controls');
+                    pOverlay.classList.add('active');
+                    const isDetailsVisible = localStorage.getItem('cs3_show_probing_details') === 'true';
+                    applyProbingListVisibility(isDetailsVisible);
+                }
+            }
+
+            const resumeOvl = document.getElementById('resumeOverlay');
+            if (resumeOvl) resumeOvl.style.display = 'none';
+
+            // Guard: only remove 'dismissing' if actually present — avoids re-sampling the
+            // opacity+transform transition timeline on frames where the class isn't there.
+            if (pContent.classList.contains('dismissing')) pContent.classList.remove('dismissing');
+
+            const activeEpInfo = (meta.episodes || []).find(e => e.isActive);
+            const targetBackdropUrl = meta.backdropUrl || (activeEpInfo ? activeEpInfo.posterUrl : '');
+
+            // Backdrop: immediate display of cached backdrop
+            if (pBackdrop && targetBackdropUrl && pBackdrop.src !== targetBackdropUrl) {
+                pBackdrop.src = targetBackdropUrl;
+            }
+
+            // Logo or text hero (stable, fixed top position)
+            const pSubtitle = document.getElementById('linkProbingSubtitle');
+            if (activeEpInfo) {
+                const s = activeEpInfo.season !== undefined && activeEpInfo.season !== null ? activeEpInfo.season : 1;
+                const ep = activeEpInfo.episode;
+                const epTitle = activeEpInfo.title ? activeEpInfo.title : `Episode ${ep}`;
+                let showTitle = meta.title || '';
+                if (showTitle.includes(' - ')) {
+                    showTitle = showTitle.split(' - ')[0].trim();
+                }
+                if (meta.logoUrl) {
+                    if (pLogo) {
+                        if (pLogo.getAttribute('data-src') !== meta.logoUrl) {
+                            pLogo.setAttribute('data-src', meta.logoUrl);
+                            pLogo.src = meta.logoUrl;
+                        }
+                        pLogo.style.display = 'block';
+                    }
+                    if (pTitle) pTitle.style.display = 'none';
+                } else {
+                    if (pLogo) {
+                        pLogo.removeAttribute('data-src');
+                        pLogo.style.display = 'none';
+                    }
+                    if (pTitle) { pTitle.innerText = showTitle; pTitle.style.display = 'block'; }
+                }
+                if (pSubtitle) {
+                    pSubtitle.innerText = `S${s}:E${ep} • ${epTitle}`;
+                    pSubtitle.style.display = 'inline-block';
+                }
+            } else {
+                if (meta.logoUrl) {
+                    if (pLogo) {
+                        if (pLogo.getAttribute('data-src') !== meta.logoUrl) {
+                            pLogo.setAttribute('data-src', meta.logoUrl);
+                            pLogo.src = meta.logoUrl;
+                        }
+                        pLogo.style.display = 'block';
+                    }
+                    if (pTitle) pTitle.style.display = 'none';
+                } else {
+                    if (pLogo) {
+                        pLogo.removeAttribute('data-src');
+                        pLogo.style.display = 'none';
+                    }
+                    if (pTitle) { pTitle.innerText = meta.title || ''; pTitle.style.display = 'block'; }
+                }
+                if (pSubtitle) pSubtitle.style.display = 'none';
+            }
+
+            // Steady Live Status label
+            const totalLinks = (meta.links || []).length;
+            const failedArr = meta.failedLinks || [];
+            const failedCount = failedArr.length;
+            const lastFailed = failedArr[failedArr.length - 1];
+            const currIdx = typeof meta.currentLinkIndex === 'number' ? meta.currentLinkIndex : -1;
+            const currentLinkObj = currIdx >= 0 ? ((meta.links || []).find(l => l.index === currIdx) || (meta.links || [])[currIdx]) : null;
+            const currQualityLabel = (currentLinkObj && currentLinkObj.quality && currentLinkObj.quality > 0 && currentLinkObj.quality !== 400) ? ` (${currentLinkObj.quality}p)` : '';
+
+            // Update persistent source count badge in header with in-place text mutation
+            const pBadge = document.getElementById('probingSourceCountBadge');
+            if (pBadge) {
+                if (totalLinks > 0) {
+                    const badgeText = `${totalLinks} source${totalLinks === 1 ? '' : 's'}`;
+                    if (pBadge.textContent !== badgeText) {
+                        pBadge.textContent = badgeText;
+                    }
+                    if (pBadge.style.display !== 'inline-flex') {
+                        pBadge.style.display = 'inline-flex';
+                    }
+                } else if (!pList || !pList.querySelector('.link-probing-item')) {
+                    if (pBadge.style.display !== 'none') {
+                        pBadge.style.display = 'none';
+                    }
+                }
+            }
+
+            if (pStatus) {
+                if (failedCount >= totalLinks && totalLinks > 0) {
+                    setProbingStatus(`All ${totalLinks} sources failed • Waiting for fallback…`, 'exhausted');
+                } else if (failedCount > 0 && lastFailed) {
+                    if (_scheduledProbingDismissTimer) {
+                        clearTimeout(_scheduledProbingDismissTimer);
+                        _scheduledProbingDismissTimer = null;
+                    }
+                    userDismissedProbing = false;
+                    delete pOverlay.dataset.dismissing;
+                    pOverlay.classList.remove('dismissing');
+                    pContent.classList.remove('dismissing');
+                    const failedLinkObj = (meta.links || []).find(l => (lastFailed.url && l.url === lastFailed.url) || l.index === lastFailed.index) || (meta.links || [])[lastFailed.index];
+                    const failedName = failedLinkObj ? failedLinkObj.name : `Source ${failedCount}`;
+                    const currName = currentLinkObj ? currentLinkObj.name : `Source ${currIdx + 1}`;
+                    const failReason = lastFailed.reason ? ` (${lastFailed.reason})` : '';
+                    setProbingStatus(`${failedName} failed${failReason} • Trying ${currName}${currQualityLabel}…`, 'failover');
+                } else if (currIdx >= 0 && currentLinkObj) {
+                    const currName = currentLinkObj.name || `Source ${currIdx + 1}`;
+                    setProbingStatus(`Connecting to ${currName}${currQualityLabel}…`, 'connecting');
+                } else if (currIdx < 0 && totalLinks > 0) {
+                    setProbingStatus(`Found ${totalLinks} source${totalLinks === 1 ? '' : 's'} • Selecting preferred link…`, 'selecting');
+                } else {
+                    setProbingStatus('Discovering streaming sources…', 'discovering');
+                }
+            }
+
+            // High-detail Glassmorphic Link cards (in-place keyed reconciliation to eliminate DOM thrashing & animation resets)
+            if (meta.links && meta.links.length > 0) {
+                // Remove initial spinner placeholder if present
+                const initialSpinner = pList.querySelector('.probing-initial-spinner');
+                if (initialSpinner) {
+                    pList.removeChild(initialSpinner);
+                }
+
+                // Index existing cards by data-url
+                const existingCards = new Map();
+                pList.querySelectorAll('.link-probing-item').forEach(el => {
+                    if (el.dataset.url) existingCards.set(el.dataset.url, el);
+                });
+
+                const activeUrls = new Set(meta.links.map(l => l.url));
+
+                // Remove stale cards
+                existingCards.forEach((card, url) => {
+                    if (!activeUrls.has(url)) {
+                        card.remove();
+                    }
+                });
+
+                meta.links.forEach((l, i) => {
+                    let st = 'waiting';
+                    let statusBadgeHtml = '';
+                    const failedInfo = failedArr.find(f => (f.url && f.url === l.url) || f.index === l.index);
+
+                    const qVal = l.quality;
+                    let qBadgeClass = 'fhd';
+                    let qLabel = '';
+                    if (qVal && qVal >= 2160) {
+                        qBadgeClass = 'uhd';
+                        qLabel = '4K UHD';
+                    } else if (qVal && qVal >= 1080) {
+                        qBadgeClass = 'fhd';
+                        qLabel = '1080p FHD';
+                    } else if (qVal && qVal >= 720) {
+                        qBadgeClass = 'fhd';
+                        qLabel = '720p HD';
+                    } else if (qVal && qVal > 0 && qVal !== 400) {
+                        qBadgeClass = '';
+                        qLabel = `${qVal}p`;
+                    }
+                    const qualityHtml = qLabel ? `<span class="link-quality-badge ${qBadgeClass}">${qLabel}</span>` : '';
+
+                    if (failedInfo) {
+                        st = 'failed';
+                        const cleanReason = failedInfo.reason ? (failedInfo.reason.length > 25 ? failedInfo.reason.slice(0, 25) + '…' : failedInfo.reason) : 'FAILED';
+                        const err = `FAILED • ${cleanReason}`;
+                        statusBadgeHtml = `<span class="link-status-badge failed"><svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg> ${err}</span>`;
+                    } else if (currIdx >= 0 && l.index === currIdx) {
+                        st = 'active';
+                        statusBadgeHtml = `<span class="link-status-badge testing"><div class="link-spinner"><span></span></div> TESTING</span>`;
+                    } else {
+                        st = 'waiting';
+                        statusBadgeHtml = `<span class="link-status-badge queue">QUEUED</span>`;
+                    }
+
+                    const targetClassName = `link-probing-item ${st}`;
+                    let card = existingCards.get(l.url);
+
+                    if (card) {
+                        // In-place patch without recreating DOM or resetting CSS spinners
+                        if (card.className !== targetClassName) {
+                            card.className = targetClassName;
+                        }
+                        card.style.cursor = 'pointer';
+                        card.onclick = () => { send('changeLink', l.url); };
+                        const badgeContainer = card.querySelector('.link-badge-container');
+                        if (badgeContainer && badgeContainer.innerHTML !== statusBadgeHtml) {
+                            badgeContainer.innerHTML = statusBadgeHtml;
+                        }
+                    } else {
+                        // Create new card
+                        card = document.createElement('div');
+                        card.className = targetClassName;
+                        card.dataset.url = l.url;
+                        card.style.cursor = 'pointer';
+                        card.onclick = () => { send('changeLink', l.url); };
+                        card.innerHTML = `
+                            <div style="display: flex; align-items: center; gap: 4px; min-width: 0;">
+                                <span style="font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 420px;">${escapeHtml(l.name)}</span>
+                                ${qualityHtml}
+                            </div>
+                            <div class="link-badge-container">${statusBadgeHtml}</div>
+                        `;
+                    }
+                    // In-place reconciliation: only reposition if DOM order differs
+                    const currentChildAtIndex = pList.children[i];
+                    if (currentChildAtIndex !== card) {
+                        pList.insertBefore(card, currentChildAtIndex || null);
+                    }
+                });
+
+                // Guarded smooth scroll: only scroll when active target changes or genuinely out of viewport
+                const activeProb = pList.querySelector('.link-probing-item.active');
+                const activeUrl = activeProb ? activeProb.dataset.url : null;
+                if (activeProb && pList.scrollHeight > pList.clientHeight && activeUrl && window._lastScrolledActiveUrl !== activeUrl) {
+                    if (!window.probingScrollRaf) {
+                        window.probingScrollRaf = requestAnimationFrame(() => {
+                            window.probingScrollRaf = null;
+                            const target = pList.querySelector('.link-probing-item.active');
+                            if (target && pList.scrollHeight > pList.clientHeight) {
+                                const listRect = pList.getBoundingClientRect();
+                                const targetRect = target.getBoundingClientRect();
+                                const isVisible = targetRect.top >= listRect.top && targetRect.bottom <= listRect.bottom;
+                                if (!isVisible) {
+                                    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                                }
+                                window._lastScrolledActiveUrl = target.dataset.url;
+                            }
+                        });
+                    }
+                }
+            } else {
+                // If cards are already rendered in the DOM, keep them stable.
+                // Never wipe existing cards with the initial spinner on transient empty updates.
+                const hasExistingCards = pList && pList.querySelector('.link-probing-item') !== null;
+                if (!hasExistingCards && !pList.querySelector('.probing-initial-spinner')) {
+                    pList.innerHTML = `<div class="probing-initial-spinner">
+                        <div class="link-spinner"><span></span></div>
+                        <span>Discovering high-speed playback sources…</span>
+                    </div>`;
+                }
+            }
+
+            const pPlayBtn = document.getElementById('probingPlayBtn');
+            if (pPlayBtn && meta.links && meta.links.length > 0) {
+                pPlayBtn.style.display = 'inline-flex';
+            }
+        } else if (meta.isProbing === false) {
+            // Kotlin finished link selection / dispatched link to engine.
+            setProbingStatus('Buffering playback…', 'buffering');
+
+            // Audio mode dismisses immediately since there are no video frames
+            if (meta.isAudioMode) {
+                dismissProbingOverlay();
+            } else if (!window.probingDismissTimer) {
+                // Safety watchdog: ensure overlay dismisses after 8s even if forward cache property isn't emitted
+                window.probingDismissTimer = setTimeout(() => {
+                    dismissProbingOverlay(true);
+                    window.probingDismissTimer = null;
+                }, 8000);
+            }
+            
+            // Highlight the successfully resolved link
+            const pList = document.getElementById('linkProbingList');
+            if (pList) {
+                const activeProb = pList.querySelector('.link-probing-item.active');
+                if (activeProb) {
+                    activeProb.classList.remove('active');
+                    activeProb.classList.add('success');
+                    const badgeContainer = activeProb.querySelector('.link-badge-container') || activeProb.querySelector('div:last-child');
+                    if (badgeContainer) {
+                        badgeContainer.innerHTML = '<span class="link-status-badge ready"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg> READY</span>';
+                    }
+                }
+            }
+        }
+
+        // Handle Exhausted / Failure State
+        const errActions = document.getElementById('linkProbingErrorActions');
+        const normActions = document.getElementById('linkProbingActions');
+        const scanBar = document.querySelector('.probing-scan-bar');
+        if (meta.isExhausted === true) {
+            userDismissedProbing = false;
+            if (pOverlay) {
+                pOverlay.classList.remove('dismissing');
+                pOverlay.classList.add('active');
+            }
+            if (pContent) {
+                pContent.classList.remove('dismissing');
+            }
+            if (scanBar && scanBar.style.display !== 'none') scanBar.style.display = 'none';
+            if (normActions) normActions.style.display = 'none';
+            if (errActions) {
+                errActions.style.display = 'flex';
+                const errMsg = document.getElementById('probingErrorMessage');
+                if (errMsg) errMsg.innerText = meta.exhaustionReason || 'Playback Failed';
+                const retryBtn = document.getElementById('probingRetryBtn');
+                if (retryBtn) { retryBtn.style.opacity = ''; retryBtn.style.pointerEvents = ''; }
+            }
+            if (pStatus) {
+                pStatus.innerText = meta.exhaustionReason || 'All candidate sources failed';
+            }
+        } else {
+            if (errActions) errActions.style.display = 'none';
+            if (scanBar && scanBar.style.display !== '') scanBar.style.display = '';
+            if (normActions && meta.isProbing === true) normActions.style.display = 'flex';
+        }
+
+        evaluateResumeOverlay();
+        evaluateUIStates();
+        // Episodes
+        if (meta.episodes && meta.episodes.length > 0) {
+            episodesBtn.classList.remove('hidden');
+            episodesData = meta.episodes;
+            const isAudioActive = !!(meta.isAudioMode || document.body.classList.contains('audio-mode-active'));
+            const isParts = meta.episodes.some(e => (e.title || '').trim().toLowerCase().startsWith('part'));
+            const isAudiobookOrTrack = isAudioActive || isParts || (meta.type === 'AudioBook' || meta.type === 'Music');
+
+            const epPanelTitle = document.getElementById('epPanelTitle');
+            if (epPanelTitle) {
+                epPanelTitle.innerText = isAudiobookOrTrack ? (isParts ? 'Parts' : 'Chapters') : 'Episodes';
+            }
+            let showTitle = (meta.title || '').trim();
+            if (showTitle.includes(' - ')) {
+                showTitle = showTitle.split(' - ')[0].trim();
+            }
+
+            const epSeriesTitle = document.getElementById('epSeriesTitle');
+            if (epSeriesTitle) {
+                epSeriesTitle.innerText = showTitle || meta.title || '';
+            }
+            const epPanelSub = document.getElementById('epPanelSub');
+            if (epPanelSub) {
+                const countUnit = isAudiobookOrTrack ? (isParts ? 'parts' : 'chapters') : 'episodes';
+                epPanelSub.innerText = `${meta.episodes.length} ${countUnit}`;
+            }
+
+            // Detect unique seasons
+            const seasons = [...new Set(meta.episodes.map(ep => ep.season !== undefined && ep.season !== null ? ep.season : 1))];
+            seasons.sort((a, b) => a - b);
+
+            // Populate Show Identity in Drawer Sidebar
+            const epLogo = document.getElementById('epDrawerLogo');
+            const epFallbackTitle = document.getElementById('epDrawerTitleFallback');
+            const epMetaRow = document.getElementById('epDrawerMetaRow');
+            const epPlot = document.getElementById('epDrawerPlot');
+
+            if (meta.logoUrl && meta.logoUrl.trim().length > 0) {
+                if (epLogo) {
+                    epLogo.onerror = () => {
+                        epLogo.style.display = 'none';
+                        if (epFallbackTitle) { epFallbackTitle.innerText = showTitle || meta.title || ''; epFallbackTitle.style.display = 'block'; }
+                    };
+                    epLogo.src = meta.logoUrl;
+                    epLogo.style.display = 'block';
+                }
+                if (epFallbackTitle) epFallbackTitle.style.display = 'none';
+            } else {
+                if (epLogo) epLogo.style.display = 'none';
+                if (epFallbackTitle) { epFallbackTitle.innerText = showTitle || meta.title || ''; epFallbackTitle.style.display = 'block'; }
+            }
+
+            if (epMetaRow) {
+                const metaItems = [];
+                if (meta.year) metaItems.push(meta.year);
+                if (meta.genres && meta.genres.length > 0) {
+                    metaItems.push(meta.genres.slice(0, 2).join(', '));
+                } else if (meta.type) {
+                    metaItems.push(meta.type);
+                }
+                if (seasons.length > 0) {
+                    metaItems.push(`${seasons.length} ${seasons.length === 1 ? 'Season' : 'Seasons'}`);
+                }
+                if (metaItems.length > 0) {
+                    epMetaRow.innerText = metaItems.join(' • ');
+                    epMetaRow.style.display = 'flex';
+                } else {
+                    epMetaRow.style.display = 'none';
+                }
+            }
+
+            if (epPlot) {
+                const plotText = (meta.plot || meta.description || '').trim();
+                if (plotText.length > 0) {
+                    epPlot.innerText = plotText;
+                    epPlot.style.display = '-webkit-box';
+                } else {
+                    epPlot.style.display = 'none';
+                }
+            }
+
+            const sChipsBar = document.getElementById('seasonChipsBar');
+            const activeEp = meta.episodes.find(e => e.isActive);
+            const activeSeason = activeEp && activeEp.season !== undefined && activeEp.season !== null ? activeEp.season : seasons[0];
+
+            if (currentSelectedSeason === null || !seasons.includes(currentSelectedSeason)) {
+                currentSelectedSeason = activeSeason;
+            }
+
+            if (seasonSelectWrap) seasonSelectWrap.style.display = 'flex';
+            if (sChipsBar) {
+                const seasonsHtml = seasons.map(s => {
+                    const isSActive = (s === currentSelectedSeason);
+                    return `<button class="ep-season-btn ${isSActive ? 'active' : ''}" data-season="${s}" onclick="onSeasonChipClick(${s})">
+                        <span>Season ${s}</span>
+                    </button>`;
+                }).join('');
+                if (sChipsBar._lastSeasonsHtml !== seasonsHtml) {
+                    sChipsBar.innerHTML = seasonsHtml;
+                    sChipsBar._lastSeasonsHtml = seasonsHtml;
+                }
+            }
+            const listEl = document.getElementById('episodesList');
+            const epPanel = document.getElementById('episodesPanel');
+            const isEpPanelOpen = epPanel && epPanel.classList.contains('open');
+            if (isEpPanelOpen && listEl && listEl.children.length > 0) {
+                const savedScrollTop = listEl.scrollTop;
+                renderFilteredEpisodes(currentSelectedSeason, typeof currentSelectedChunk !== 'undefined' ? currentSelectedChunk : -1, false);
+                listEl.scrollTop = savedScrollTop;
+            } else {
+                renderFilteredEpisodes(currentSelectedSeason, -1, false);
+            }
+
+            const activeIdx = meta.episodes.findIndex(e => e.isActive);
+            if (activeIdx !== -1 && activeIdx < meta.episodes.length - 1) nextEpBtn.classList.remove('hidden');
+            else nextEpBtn.classList.add('hidden');
+        } else {
+            episodesData = [];
+            episodesBtn.classList.add('hidden');
+            nextEpBtn.classList.add('hidden');
+        }
+        // Links / Servers
+        if (meta.links && meta.links.length > 0) {
+            linksData = meta.links;
+            const filterWrap = document.getElementById('serversFilterWrap');
+            if (filterWrap) {
+                if (meta.links.length > 1) {
+                    filterWrap.style.display = 'block';
+                } else {
+                    filterWrap.style.display = 'none';
+                }
+            }
+            renderFilteredServers();
+        } else {
+            linksData = [];
+            const serverSub = document.getElementById('serverSubtitle');
+            if (serverSub) serverSub.innerText = '0 sources available';
+            const sList = document.getElementById('serversList');
+            if (sList) sList.innerHTML = '';
+        }
+        // Audio Tracks
+        let audioHtml = '';
+        const renderedAudioNames = new Set();
+
+        // 1. Native MPV Audio Tracks (already attached to MPV engine)
+        if (meta.audioTracks && meta.audioTracks.length > 0) {
+            for (const t of meta.audioTracks) {
+                const displayName = t.name || ('Track ' + t.id);
+                renderedAudioNames.add(displayName.toLowerCase().trim());
+                const normalized = normalizeAudioName(displayName);
+                if (normalized) renderedAudioNames.add(normalized);
+
+                audioHtml += `
+                    <div class="track-item ${t.isSelected ? 'active' : ''}" onclick="send('setAudioTrack','${t.id}');closeAllPanels();">
+                        <span class="track-check">${t.isSelected ? SVGS.check : ''}</span>
+                        <span class="track-name">${displayName}</span>
+                    </div>`;
+            }
+        }
+
+        // 2. Lazy Proxy Audio Tracks (available alternative languages)
+        if (meta.lazyAudioTracks && meta.lazyAudioTracks.length > 0) {
+            for (const t of meta.lazyAudioTracks) {
+                const displayName = t.name;
+                const normalized = normalizeAudioName(displayName);
+                const isAlreadyAttached = (meta.activeLazyAudioTrackUrl && meta.activeLazyAudioTrackUrl === t.url);
+                const isNameRendered = renderedAudioNames.has(displayName.toLowerCase().trim()) || (normalized && renderedAudioNames.has(normalized));
+
+                if (!isAlreadyAttached && !isNameRendered) {
+                    audioHtml += `
+                        <div class="track-item" onclick="send('loadLazyAudioTrack','${t.url}');closeAllPanels();">
+                            <span class="track-check"></span>
+                            <span class="track-name">${displayName}</span>
+                        </div>`;
+                }
+            }
+        }
+        const audioListElem = document.getElementById('audioList');
+        if (audioListElem && audioListElem._lastAudioHtml !== audioHtml) {
+            audioListElem.innerHTML = audioHtml || `<div style="padding:10px 20px;font-size:13px;color:#666;">No audio tracks</div>`;
+            audioListElem._lastAudioHtml = audioHtml;
+        }
+
+        // Video Tracks (Qualities)
+        let videoHtml = '';
+        const renderedVideoNames = new Set();
+
+        // 1. Lazy Video Quality Variants (from HLS / DASH manifests)
+        if (meta.lazyVideoTracks && meta.lazyVideoTracks.length > 0) {
+            const anyMatched = meta.lazyVideoTracks.some(t => isTrackMatchingResolution(t.name, t.url, meta));
+
+            meta.lazyVideoTracks.forEach((t, index) => {
+                const displayName = t.name;
+                renderedVideoNames.add(displayName.toLowerCase().trim());
+                const hd = isTrackHD(displayName, meta);
+                const resBadge = `<span class="srv-badge ${hd ? 'hd' : 'sd'}">${hd ? 'HD' : 'SD'}</span>`;
+                
+                const isActive = anyMatched 
+                    ? isTrackMatchingResolution(t.name, t.url, meta)
+                    : (index === 0);
+                    
+                videoHtml += `
+                    <div class="track-item ${isActive ? 'active' : ''}" onclick="send('loadLazyVideoTrack','${t.url}');closeAllPanels();">
+                        <span class="track-check">${isActive ? SVGS.check : ''}</span>
+                        <span class="track-name">${displayName} ${resBadge}</span>
+                    </div>`;
+            });
+        }
+
+        // 2. Native MPV Video Tracks (if multiple native video tracks exist)
+        if (meta.videoTracks && meta.videoTracks.length > 1) {
+            for (const t of meta.videoTracks) {
+                const displayName = t.name || ('Track ' + t.id);
+                if (!renderedVideoNames.has(displayName.toLowerCase().trim())) {
+                    const hd = isTrackHD(displayName, meta);
+                    const resBadge = `<span class="srv-badge ${hd ? 'hd' : 'sd'}">${hd ? 'HD' : 'SD'}</span>`;
+                    videoHtml += `
+                        <div class="track-item ${t.isSelected ? 'active' : ''}" onclick="send('setVideoTrack','${t.id}');closeAllPanels();">
+                            <span class="track-check">${t.isSelected ? SVGS.check : ''}</span>
+                            <span class="track-name">${displayName} ${resBadge}</span>
+                        </div>`;
+                }
+            }
+        } else if (meta.videoTracks && meta.videoTracks.length === 1 && videoHtml === '') {
+            const t = meta.videoTracks[0];
+            const displayName = meta.resolution || t.name || 'Auto';
+            const hd = isTrackHD(displayName, meta);
+            const resBadge = `<span class="srv-badge ${hd ? 'hd' : 'sd'}">${hd ? 'HD' : 'SD'}</span>`;
+            videoHtml += `
+                <div class="track-item active" onclick="send('setVideoTrack','${t.id}');closeAllPanels();">
+                    <span class="track-check">${SVGS.check}</span>
+                    <span class="track-name">${displayName} ${resBadge}</span>
+                </div>`;
+        }
+        const videoListElem = document.getElementById('videoList');
+        if (videoListElem && videoListElem._lastVideoHtml !== videoHtml) {
+            videoListElem.innerHTML = videoHtml || `<div style="padding:10px 20px;font-size:13px;color:#666;">Auto (Default)</div>`;
+            videoListElem._lastVideoHtml = videoHtml;
+        }
+
+        // Update the capsule button badge with the active resolution or 'Auto'
+        let fallbackTrackName = '';
+        if (meta.videoTracks && meta.videoTracks.length > 0) {
+            const sel = meta.videoTracks.find(t => t.isSelected);
+            if (sel && sel.name) fallbackTrackName = sel.name;
+        }
+        const activeQualityLabel = formatStandardQualityLabel(meta.resolution, fallbackTrackName);
+        const qBadge = document.getElementById('qualityServerBadge');
+        if (qBadge) qBadge.innerText = activeQualityLabel;
+
+        // Subtitle Tracks
+        const formatSubItemContent = (rawName) => {
+            const cleanName = (rawName || '').trim();
+            if (!cleanName || cleanName.toLowerCase() === 'off') {
+                return `<div class="sub-content-wrap"><span class="sub-lang-title">${cleanName || 'Off'}</span></div>`;
+            }
+            if (cleanName.includes(' • ')) {
+                const parts = cleanName.split(' • ');
+                const langPart = escapeHtml(parts[0].trim());
+                const releasePart = escapeHtml(parts.slice(1).join(' • ').trim());
+                return `
+                    <div class="sub-content-wrap">
+                        <div class="sub-primary-row">
+                            <span class="sub-lang-title">${langPart}</span>
+                        </div>
+                        ${releasePart ? `<span class="sub-release-title" title="${releasePart}">${releasePart}</span>` : ''}
+                    </div>`;
+            }
+            return `<div class="sub-content-wrap"><span class="sub-lang-title">${escapeHtml(cleanName)}</span></div>`;
+        };
+
+        let subHtml = '';
+        const noSub = !(meta.subTracks && meta.subTracks.some(t => t.isSelected));
+        subHtml += `<div class="sub-item ${noSub ? 'active' : ''}" onclick="send('setSubtitleTrack','');closeAllPanels();">
+                    <span class="check-icon">${noSub ? SVGS.check : ''}</span>
+                    ${formatSubItemContent('Off')}
+                </div>`;
+        if (meta.subTracks && meta.subTracks.length > 0) {
+            subHtml += meta.subTracks.map(t => {
+                const displayName = t.name || ('Track ' + t.id);
+                return `
+                    <div class="sub-item ${t.isSelected ? 'active' : ''}" onclick="send('setSubtitleTrack','${t.id}');closeAllPanels();">
+                        <span class="check-icon">${t.isSelected ? SVGS.check : ''}</span>
+                        ${formatSubItemContent(displayName)}
+                    </div>`;
+            }).join('');
+        }
+        if (meta.lazySubTracks && meta.lazySubTracks.length > 0) {
+            // Deduplicate against the already rendered native tracks to prevent lazy duplicates
+            const lazyUnique = meta.lazySubTracks.filter(t => !subHtml.includes(t.name));
+            subHtml += lazyUnique.map(t => `
+                <div class="sub-item" onclick="send('loadLazySubtitleTrack','${t.url}');closeAllPanels();">
+                    <span class="check-icon"></span>
+                    ${formatSubItemContent(t.name)}
+                </div>`).join('');
+        }
+
+        const subListElem = document.getElementById('subList');
+        if (subListElem && subListElem._lastSubHtml !== subHtml) {
+            subListElem.innerHTML = subHtml;
+            subListElem._lastSubHtml = subHtml;
+        }
+
+        // Auto-populate search query with title whenever metadata arrives
+        const searchInput = document.getElementById('subSearchQuery');
+        if (searchInput && !searchInput._userEdited && meta.title) {
+            searchInput.value = meta.title;
+            searchInput._defaultTitle = meta.title;
+        }
+        // Update custom font input
+        const subFontInput = document.getElementById('subFontInput');
+        if (subFontInput && meta.availableSubtitleFonts !== undefined) {
+            let optionsHtml = '<option value="" style="background:#222;">Default</option>';
+            meta.availableSubtitleFonts.forEach(font => {
+                optionsHtml += `<option value="${font}" style="background:#222;">${font}</option>`;
+            });
+            subFontInput.innerHTML = optionsHtml;
+            subFontInput.value = meta.activeSubtitleFont || '';
+        }
+
+        // Subtitle Processing & Overrides Toggle States
+        if (meta.activeSubtitleOverrideEnabled !== undefined) {
+            subOverrideVisible = meta.activeSubtitleOverrideEnabled === true;
+            const btnOverride = document.getElementById('btnToggleSubOverride');
+            if (btnOverride) {
+                btnOverride.classList.toggle('active', subOverrideVisible);
+            }
+        }
+        if (meta.activeSubtitleRemoveCaptions !== undefined) {
+            subCaptionsFilterOn = meta.activeSubtitleRemoveCaptions === true;
+            const btnCaptions = document.getElementById('btnToggleSubCaptions');
+            if (btnCaptions) {
+                btnCaptions.classList.toggle('active', subCaptionsFilterOn);
+            }
+        }
+        if (meta.activeSubtitleRemoveBloat !== undefined) {
+            subBloatFilterOn = meta.activeSubtitleRemoveBloat === true;
+            const btnBloat = document.getElementById('btnToggleSubBloat');
+            if (btnBloat) {
+                btnBloat.classList.toggle('active', subBloatFilterOn);
+            }
+        }
+        if (meta.activeSubtitleUppercase !== undefined) {
+            subUppercaseOn = meta.activeSubtitleUppercase === true;
+            const btnUpper = document.getElementById('btnToggleSubUppercase');
+            if (btnUpper) {
+                btnUpper.classList.toggle('active', subUppercaseOn);
+            }
+        }
+
+        // Subtitle Text Color Palette
+        if (meta.activeSubtitleColor) {
+            document.querySelectorAll('#subTextColorPalette .desktop-color-dot').forEach(d => {
+                if (d.dataset.color && d.dataset.color.toLowerCase() === meta.activeSubtitleColor.toLowerCase()) {
+                    document.querySelectorAll('#subTextColorPalette .desktop-color-dot').forEach(x => x.classList.remove('active'));
+                    d.classList.add('active');
+                }
+            });
+        }
+
+        // Helper for slider progress fill
+        const updateSliderFillHelper = (slider) => {
+            if (!slider) return;
+            const min = parseFloat(slider.min) || 0;
+            const max = parseFloat(slider.max) || 100;
+            const current = parseFloat(slider.value) || 0;
+            const pct = Math.max(0, Math.min(100, ((current - min) / (max - min)) * 100));
+            slider.style.setProperty('--slider-pct', `${pct}%`);
+        };
+
+        // Font Size Slider
+        if (meta.activeSubtitleSize) {
+            const slider = document.getElementById('subSizeSlider');
+            if (slider) {
+                slider.value = meta.activeSubtitleSize;
+                updateSliderFillHelper(slider);
+                const badge = document.getElementById('subSizeVal');
+                if (badge) badge.innerText = `${meta.activeSubtitleSize}px`;
+            }
+        }
+
+        // Vertical Position Slider
+        if (meta.activeSubtitlePos) {
+            const slider = document.getElementById('subPosSlider');
+            if (slider) {
+                slider.value = meta.activeSubtitlePos;
+                updateSliderFillHelper(slider);
+                const badge = document.getElementById('subPosVal');
+                if (badge) badge.innerText = `${meta.activeSubtitlePos}%`;
+            }
+        }
+
+        // Initialize Background Select
+        if (meta.activeSubtitleBackground) {
+            const bgSelect = document.getElementById('subBgInput');
+            if (bgSelect) {
+                bgSelect.value = meta.activeSubtitleBackground;
+            }
+            if (window.updateSubtitlePreview) window.updateSubtitlePreview();
+        }
+
+        // Advanced Subtitle Styles
+        if (meta.activeSubtitleBorderColor) {
+            document.querySelectorAll('#subBorderColorPalette .border-dot').forEach(d => {
+                if (d.dataset.color && d.dataset.color.toLowerCase() === meta.activeSubtitleBorderColor.toLowerCase()) {
+                    document.querySelectorAll('#subBorderColorPalette .border-dot').forEach(x => x.classList.remove('active'));
+                    d.classList.add('active');
+                }
+            });
+        }
+        if (meta.activeSubtitleShadowColor) {
+            document.querySelectorAll('#subShadowColorPalette .shadow-dot').forEach(d => {
+                if (d.dataset.color && d.dataset.color.toLowerCase() === meta.activeSubtitleShadowColor.toLowerCase()) {
+                    document.querySelectorAll('#subShadowColorPalette .shadow-dot').forEach(x => x.classList.remove('active'));
+                    d.classList.add('active');
+                }
+            });
+        }
+        if (meta.activeSubtitleBorderSize) {
+            const slider = document.getElementById('subBorderSizeSlider');
+            if (slider) {
+                slider.value = meta.activeSubtitleBorderSize;
+                updateSliderFillHelper(slider);
+                const badge = document.getElementById('subBorderSizeVal');
+                if (badge) badge.innerText = `${meta.activeSubtitleBorderSize}px`;
+            }
+        }
+        if (meta.activeSubtitleShadowOffset) {
+            const slider = document.getElementById('subShadowOffsetSlider');
+            if (slider) {
+                slider.value = meta.activeSubtitleShadowOffset;
+                updateSliderFillHelper(slider);
+                const badge = document.getElementById('subShadowOffsetVal');
+                if (badge) badge.innerText = `${meta.activeSubtitleShadowOffset}px`;
+            }
+        }
+        if (meta.activeSubtitleBlur) {
+            const slider = document.getElementById('subBlurSlider');
+            if (slider) {
+                slider.value = meta.activeSubtitleBlur;
+                updateSliderFillHelper(slider);
+                const badge = document.getElementById('subBlurVal');
+                if (badge) badge.innerText = `${meta.activeSubtitleBlur}px`;
+            }
+        }
+        
+        let subBoldState = meta.activeSubtitleBold === 'yes';
+        let subItalicState = meta.activeSubtitleItalic === 'yes';
+        const btnBold = document.getElementById('btnSubBold');
+        if (btnBold) {
+            if (subBoldState) btnBold.classList.add('active');
+            else btnBold.classList.remove('active');
+        }
+        const btnItalic = document.getElementById('btnSubItalic');
+        if (btnItalic) {
+            if (subItalicState) btnItalic.classList.add('active');
+            else btnItalic.classList.remove('active');
+        }
+
+        if (window.updateSubtitlePreview) {
+            window.updateSubtitlePreview();
+        }
+
+        // Audio Settings & Sync
+        if (meta.audioNormalization !== undefined) {
+            isAudioNormOn = meta.audioNormalization === true;
+            document.getElementById('btnToggleAudioNorm')?.classList.toggle('active', isAudioNormOn);
+        }
+        if (meta.audioNormStrength) {
+            document.querySelectorAll('#audioNormChips .chip').forEach(c => {
+                c.classList.toggle('active', c.getAttribute('data-val') === meta.audioNormStrength);
+            });
+        }
+        if (meta.audioSpatial !== undefined) {
+            isAudioSpatialOn = meta.audioSpatial === true;
+            document.getElementById('btnToggleAudioSpatial')?.classList.toggle('active', isAudioSpatialOn);
+        }
+        if (meta.audioEqPreset) {
+            document.querySelectorAll('#audioEqChips .chip').forEach(c => {
+                c.classList.toggle('active', c.getAttribute('data-val') === meta.audioEqPreset);
+            });
+        }
+        if (meta.audioVolumeMax !== undefined) {
+            isVolumeMaxOn = meta.audioVolumeMax === true;
+            document.getElementById('btnToggleVolumeMax')?.classList.toggle('active', isVolumeMaxOn);
+            if (volumeBar) {
+                volumeBar.max = isVolumeMaxOn ? '200' : '100';
+            }
+        }
+        if (meta.audioDelay !== undefined && typeof meta.audioDelay === 'number') {
+            const slider = document.getElementById('audioDelaySlider');
+            const val = document.getElementById('audioDelayVal');
+            if (slider) slider.value = meta.audioDelay;
+            if (val) val.innerText = `${meta.audioDelay >= 0 ? '+' : ''}${meta.audioDelay.toFixed(2)}s`;
+        }
+
+        // Shaders
+        let shaderHtml = '';
+        const noShaderActive = !meta.activeShader || meta.activeShader === 'None';
+        shaderHtml += `<div class="sub-item ${noShaderActive ? 'active' : ''}" onclick="send('selectShader','None');closeAllPanels();">
+            <span class="sub-name">None (Default)</span>
+            <span class="check-icon">${SVGS.check}</span>
+        </div>`;
+        if (meta.shaders && meta.shaders.length > 0) {
+            shaderHtml += meta.shaders.map(s => `
+                <div class="sub-item ${s === meta.activeShader ? 'active' : ''}" onclick="send('selectShader','${s}');closeAllPanels();">
+                    <span class="sub-name">${s.replace('.glsl', '')}</span>
+                    <span class="check-icon">${SVGS.check}</span>
+                </div>
+            `).join('');
+        }
+        document.getElementById('shaderList').innerHTML = shaderHtml;
+
+        // ── Chapters Handling ─────────────────────────────────────────
+        _cachedChapters = meta.chapters || [];
+        _activeChapterIndex = typeof meta.currentChapterIndex === 'number' ? meta.currentChapterIndex : -1;
+        
+        if (_cachedChapters && _cachedChapters.length > 0) {
+            chaptersBtn?.classList.remove('hidden');
+        } else {
+            chaptersBtn?.classList.add('hidden');
+            if (document.getElementById('chaptersPanel')?.classList.contains('open')) {
+                closeAllPanels();
+            }
+        }
+        
+        // ── Skip Intervals & Active Skip Button ─────────────────────────
+        _cachedSkipIntervals = meta.skipIntervals || [];
+        const skipBtn = document.getElementById('skipBtn');
+        const skipBtnLabel = document.getElementById('skipBtnLabel');
+        if (skipBtn) {
+            const hasOpenPanel = isMenuOpen || document.body.classList.contains('panel-open') || !!document.querySelector('.panel.open, .ep-fullscreen-drawer.open');
+            const activeInv = meta.activeSkipInterval || (_cachedSkipIntervals.find(inv => currentPosMs >= inv.startMs && currentPosMs < inv.endMs));
+            if (activeInv && !hasOpenPanel) {
+                if (skipBtnLabel) skipBtnLabel.innerText = activeInv.label || 'Skip Intro';
+                skipBtn.style.display = 'flex';
+            } else {
+                skipBtn.style.display = 'none';
+            }
+        }
+
+        renderChaptersList(_cachedChapters, _activeChapterIndex);
+        renderSeekbarChapters(_cachedChapters, meta.skipIntervals);
+
+        // ── Audio Mode State & UI Sync ─────────────────────────────────────
+        const isAudioActive = !!meta.isAudioMode;
+        const audioStationEl = document.getElementById('audioStation');
+        if (isAudioActive) {
+            document.body.classList.add('audio-mode-active');
+            if (audioStationEl) audioStationEl.style.display = 'flex';
+            if (typeof updateAudioRepeatUI === 'function') updateAudioRepeatUI();
+            if (typeof updateAudioPlayPauseIcon === 'function') updateAudioPlayPauseIcon();
+            if (globalIsPlaying || currentPosMs > 50 || meta.isProbing === false) {
+                dismissProbingOverlay();
+            }
+
+            // Always allow "Return to Video" if video tracks exist or if stream is not exclusively audio
+            const hasVideo = !meta.isAudioOnlyStream || (Array.isArray(meta.videoTracks) && meta.videoTracks.length > 0);
+            const returnBtn = document.getElementById('audioReturnToVideoBtn');
+            if (returnBtn) {
+                returnBtn.style.display = hasVideo ? 'inline-flex' : 'none';
+            }
+        } else {
+            document.body.classList.remove('audio-mode-active');
+            if (audioStationEl) audioStationEl.style.display = 'none';
+        }
+
+        const audioModeBtn = document.getElementById('audioModeBtn');
+        if (audioModeBtn) {
+            audioModeBtn.classList.toggle('active', isAudioActive);
+        }
+
+        const audioStationTitle = document.getElementById('audioStationTitle');
+        const audioStationSub = document.getElementById('audioStationSubtitle');
+        const audioStationCover = document.getElementById('audioStationCoverImg');
+        const audioStationFallback = document.getElementById('audioStationCoverFallback');
+        const audioStationBackdrop = document.getElementById('audioStationBackdrop');
+        const audioStationYear = document.getElementById('audioStationYearChip');
+
+        if (audioStationTitle) {
+            const cleanScraperTitle = (raw) => {
+                if (!raw) return '';
+                const parts = raw.split(/\s*-\s*S\d+E\d+\s*-\s*/i);
+                if (parts.length > 1 && parts[0].trim().toLowerCase() === parts[1].trim().toLowerCase()) {
+                    return parts[0].trim();
+                }
+                return raw.trim();
+            };
+
+            const bookOrSeriesTitle = cleanScraperTitle(meta.title);
+
+            if (activeEp && activeEp.title && !activeEp.title.toLowerCase().startsWith('episode')) {
+                audioStationTitle.innerText = activeEp.title;
+                if (audioStationSub) audioStationSub.innerText = bookOrSeriesTitle || 'Unknown Artist';
+            } else if (activeEp) {
+                let epStr = '';
+                if (activeEp.season && activeEp.episode) epStr = `Season ${activeEp.season} • Episode ${activeEp.episode}`;
+                else if (activeEp.episode) epStr = `Episode ${activeEp.episode}`;
+                audioStationTitle.innerText = epStr || bookOrSeriesTitle || 'Audio Stream';
+                if (audioStationSub) audioStationSub.innerText = bookOrSeriesTitle || 'Audio Stream';
+            } else {
+                audioStationTitle.innerText = bookOrSeriesTitle || 'Audio Stream';
+                if (audioStationSub) audioStationSub.innerText = (meta.plot && meta.plot.length < 80 && !meta.plot.includes('\n')) ? meta.plot : (meta.year ? String(meta.year) : 'Audio Stream');
+            }
+        }
+
+        if (audioStationYear) {
+            if (meta.year) {
+                audioStationYear.innerText = String(meta.year);
+                audioStationYear.style.display = 'inline-block';
+            } else {
+                audioStationYear.style.display = 'none';
+            }
+        }
+
+        const coverUrl = (activeEp ? activeEp.posterUrl : '') || meta.backdropUrl || '';
+
+        if (coverUrl && audioStationCover) {
+            if (audioStationCover.dataset.lastSrc !== coverUrl) {
+                audioStationCover.dataset.lastSrc = coverUrl;
+                audioStationCover.src = coverUrl;
+                audioStationCover.onload = () => {
+                    audioStationCover.style.display = 'block';
+                    if (audioStationFallback) audioStationFallback.style.display = 'none';
+                };
+                audioStationCover.onerror = () => {
+                    audioStationCover.style.display = 'none';
+                    if (audioStationFallback) audioStationFallback.style.display = 'flex';
+                };
+            }
+            if (audioStationBackdrop) {
+                audioStationBackdrop.style.backgroundImage = `url("${coverUrl}")`;
+            }
+        } else if (audioStationCover) {
+            audioStationCover.style.display = 'none';
+            if (audioStationFallback) audioStationFallback.style.display = 'flex';
+            if (audioStationBackdrop) audioStationBackdrop.style.backgroundImage = 'none';
+        }
+
+        // Nav buttons visibility in audio station
+        const audioStationPrevBtn = document.getElementById('audioStationPrevTrackBtn');
+        const audioStationNextBtn = document.getElementById('audioStationNextTrackBtn');
+        if (episodesData && episodesData.length > 1) {
+            const activeIdx = episodesData.findIndex(e => e.isActive);
+            if (audioStationPrevBtn) audioStationPrevBtn.style.opacity = (activeIdx > 0) ? '1' : '0.35';
+            if (audioStationNextBtn) audioStationNextBtn.style.opacity = (activeIdx !== -1 && activeIdx < episodesData.length - 1) ? '1' : '0.35';
+        }
+
+        // Chapters button visibility in audio station
+        const audioChaptersBtn = document.getElementById('audioChaptersBtn');
+        const audioChaptersBtnText = document.getElementById('audioChaptersBtnText');
+        if (audioChaptersBtn) {
+            const hasChapters = _cachedChapters && _cachedChapters.length > 0;
+            audioChaptersBtn.style.display = hasChapters ? 'inline-flex' : 'none';
+            if (hasChapters && audioChaptersBtnText) {
+                audioChaptersBtnText.innerText = `Chapters (${_cachedChapters.length})`;
+            }
+        }
+
+        // Episodes / Parts button visibility in audio station
+        const audioEpisodesBtn = document.getElementById('audioEpisodesBtn');
+        const audioEpisodesBtnText = document.getElementById('audioEpisodesBtnText');
+        if (audioEpisodesBtn) {
+            const hasMultipleEpisodes = episodesData && episodesData.length > 1;
+            audioEpisodesBtn.style.display = hasMultipleEpisodes ? 'inline-flex' : 'none';
+            if (hasMultipleEpisodes && audioEpisodesBtnText) {
+                const isParts = episodesData.some(e => (e.title || '').trim().toLowerCase().startsWith('part'));
+                const label = isParts ? 'Parts' : 'Episodes';
+                audioEpisodesBtnText.innerText = `${label} (${episodesData.length})`;
+            }
+        }
+
+        // Synced Lyrics Processing
+        const rawLyrics = meta.lyrics || '';
+        const parsed = (rawLyrics && typeof rawLyrics === 'string') ? parseLyrics(rawLyrics) : [];
+        renderLyricsList(parsed);
+        const hasLyrics = parsed.length > 0;
+        const audioTabSwitcher = document.getElementById('audioTabSwitcher');
+        if (audioTabSwitcher) {
+            audioTabSwitcher.style.display = hasLyrics ? 'inline-flex' : 'none';
+        }
+        if (!hasLyrics) {
+            const tabCover = document.getElementById('audioTabCover');
+            const tabLyrics = document.getElementById('audioTabLyrics');
+            const coverView = document.getElementById('audioCoverView');
+            const lyricsView = document.getElementById('audioLyricsView');
+            tabCover?.classList.add('active');
+            tabLyrics?.classList.remove('active');
+            if (coverView) coverView.style.display = 'flex';
+            if (lyricsView) lyricsView.style.display = 'none';
+        }
+    };
+
+    let _lastRenderedChaptersJson = '';
+    const renderChaptersList = (chapters, activeIndex) => {
+        if (!chaptersList) return;
+        if (!chapters || chapters.length === 0) {
+            _lastRenderedChaptersJson = '';
+            chaptersList.innerHTML = '<div style="padding: 24px; text-align: center; color: rgba(255,255,255,0.4); font-size: 13px;">No chapters found for this video</div>';
+            if (chaptersSubtitle) chaptersSubtitle.innerText = 'No chapters available';
+            return;
+        }
+        
+        if (chaptersSubtitle) {
+            chaptersSubtitle.innerText = `${chapters.length} chapter${chapters.length > 1 ? 's' : ''}`;
+        }
+        
+        const currentJson = JSON.stringify(chapters);
+        if (_lastRenderedChaptersJson !== currentJson) {
+            _lastRenderedChaptersJson = currentJson;
+            chaptersList.innerHTML = chapters.map((ch, idx) => {
+                const isActive = idx === activeIndex;
+                return `
+                    <div class="chapter-item ${isActive ? 'active' : ''}" onclick="send('seekTo', ${ch.timeMs}); closeAllPanels();">
+                        <div class="chapter-info">
+                            <div class="chapter-num">${idx + 1}</div>
+                            <div class="chapter-title">${escapeHtml(ch.title || `Chapter ${idx + 1}`)}</div>
+                        </div>
+                        <div class="chapter-time">${fmt(ch.timeMs)}</div>
+                    </div>
+                `;
+            }).join('');
+        } else {
+            // Update active state in-place without rebuilding DOM under hover cursor
+            const items = chaptersList.querySelectorAll('.chapter-item');
+            if (items) {
+                items.forEach((item, idx) => {
+                    if (idx === activeIndex) item.classList.add('active');
+                    else item.classList.remove('active');
+                });
+            }
+        }
+    };
+
+    const renderSeekbarChapters = (chapters, skipIntervals) => {
+        if (!seekChapters) return;
+        seekChapters.innerHTML = '';
+        
+        // Render skip intervals (highlighted zones on seekbar)
+        if (skipIntervals && skipIntervals.length > 0 && durationMs > 0) {
+            skipIntervals.forEach(inv => {
+                const leftPct = Math.max(0, Math.min(100, (inv.startMs / durationMs) * 100));
+                const rightPct = Math.max(0, Math.min(100, (inv.endMs / durationMs) * 100));
+                const widthPct = Math.max(0.5, rightPct - leftPct);
+
+                const div = document.createElement('div');
+                div.className = `seek-skip-interval ${inv.type ? inv.type.toLowerCase() : ''}`;
+                div.style.left = `${leftPct}%`;
+                div.style.width = `${widthPct}%`;
+                div.title = `${inv.label || 'Skip'} (${fmt(inv.startMs)} - ${fmt(inv.endMs)})`;
+                seekChapters.appendChild(div);
+            });
+        }
+
+        if (!chapters || chapters.length <= 1 || durationMs <= 0) return;
+        
+        chapters.forEach((ch, idx) => {
+            if (idx === 0 && ch.timeMs === 0) return; // Skip zero start position
+            const pct = Math.max(0, Math.min(100, (ch.timeMs / durationMs) * 100));
+            const notch = document.createElement('div');
+            notch.className = 'chapter-notch';
+            notch.style.left = `${pct}%`;
+            notch.title = `${ch.title || `Chapter ${idx + 1}`} (${fmt(ch.timeMs)})`;
+            seekChapters.appendChild(notch);
+        });
+    };
+
+    // Seekbar Hover Tooltip & Hover Highlight
+    if (seekWrap && seekTooltip) {
+        const seekHover = document.getElementById('seekHover');
+        seekWrap.addEventListener('mousemove', e => {
+            if (durationMs <= 0) return;
+            const rect = seekWrap.getBoundingClientRect();
+            const offsetX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+            const pct = rect.width > 0 ? (offsetX / rect.width) : 0;
+            const hoverTimeMs = pct * durationMs;
+            
+            if (seekHover) {
+                seekHover.style.width = `${(pct * 100).toFixed(2)}%`;
+            }
+            
+            let chapterText = '';
+            if (_cachedChapters && _cachedChapters.length > 0) {
+                let matchingCh = null;
+                for (let i = _cachedChapters.length - 1; i >= 0; i--) {
+                    if (hoverTimeMs >= _cachedChapters[i].timeMs) {
+                        matchingCh = _cachedChapters[i];
+                        break;
+                    }
+                }
+                if (matchingCh && matchingCh.title) {
+                    chapterText = `<span class="seek-tooltip-chapter">${escapeHtml(matchingCh.title)}</span>`;
+                }
+            }
+            
+            seekTooltip.innerHTML = `${fmt(hoverTimeMs)}${chapterText}`;
+            
+            const tipWidth = seekTooltip.offsetWidth || 50;
+            const layoutWidth = rect.width > 0 ? (rect.width / 1.15) : 1;
+            const halfTipPct = Math.min(48, ((tipWidth / 2 + 6) / layoutWidth) * 100);
+            const clampedPct = Math.max(halfTipPct, Math.min(100 - halfTipPct, pct * 100));
+            seekTooltip.style.left = `${clampedPct.toFixed(2)}%`;
+            seekTooltip.classList.add('visible');
+        });
+        
+        seekWrap.addEventListener('mouseleave', () => {
+            seekTooltip.classList.remove('visible');
+            if (seekHover) {
+                seekHover.style.width = '0%';
+            }
+        });
+    }
+
+    const dismissProbingOverlay = (userInitiated = false) => {
+        const pOverlay = document.getElementById('linkProbingOverlay');
+        const pContent = document.getElementById('linkProbingContent');
+        if (!pOverlay || !pOverlay.classList.contains('active')) return;
+
+        // If already mid-fadeout, ignore redundant triggers
+        if (pOverlay.classList.contains('dismissing')) return;
+
+        // If a timed dismissal is already scheduled and user clicks skip, cancel timer and fire immediately!
+        if (_scheduledProbingDismissTimer) {
+            if (userInitiated) {
+                clearTimeout(_scheduledProbingDismissTimer);
+                _scheduledProbingDismissTimer = null;
+            } else {
+                return; // already scheduled
+            }
+        } else if (pOverlay.dataset.dismissing === 'true' && !userInitiated) {
+            return;
+        }
+
+        // Once dismissed (by user click OR by onPlaybackReady), it stays dismissed
+        // for the entire session. Only hardResetAllOverlays() on a new episode can bring it back.
+        userDismissedProbing = true;
+        window.hasDismissedInitialProbing = true;
+        const lContainer = document.getElementById('loadingContainer');
+        if (lContainer) lContainer.classList.remove('show');
+        if (window.probingDismissTimer) {
+            clearTimeout(window.probingDismissTimer);
+            window.probingDismissTimer = null;
+        }
+        
+        pOverlay.dataset.dismissing = 'true';
+        
+        // Ensure brief smooth runway (200ms) so fast links don't flash jarringly
+        const elapsed = Date.now() - (window.sessionStartTime || 0);
+        const minBufferWait = userInitiated ? 0 : Math.max(0, 200 - elapsed);
+
+        const executeDismissal = () => {
+            _scheduledProbingDismissTimer = null;
+            // Fade content out first
+            if (pContent) pContent.classList.add('dismissing');
+            
+            setTimeout(() => {
+                // Crossfade the dark backdrop out and disable overlay
+                pOverlay.classList.add('dismissing');
+                pOverlay.classList.remove('active');
+                delete pOverlay.dataset.dismissing;
+                
+                setTimeout(() => {
+                    pOverlay.classList.remove('dismissing');
+                }, 450);
+
+                if (overlay) {
+                    overlay.classList.remove('hide-main-ui');
+                    overlay.classList.add('hidden-controls');
+                }
+                document.body.classList.add('hidden-controls');
+                evaluateUIStates();
+
+                // Trigger maturity advisory on clean playback start
+                triggerMaturityAdvisory();
+            }, 250);
+        };
+
+        if (minBufferWait > 0) {
+            _scheduledProbingDismissTimer = setTimeout(executeDismissal, minBufferWait);
+        } else {
+            executeDismissal();
+        }
+    };
+    // Expose globally so Kotlin can call via executeScript("window.__dismissProbingOverlay()")
+    window.__dismissProbingOverlay = dismissProbingOverlay;
+
+    // Handles volume/mute/app-loading-status sent by Kotlin (separate from C++ state_update)
+    const handleAppStateUpdate = (s) => {
+        if (s.debugWait !== undefined) window.debugWait = s.debugWait;
+        if (s.debugHasEver !== undefined) window.debugHasEver = s.debugHasEver;
+        if (s.debugPos !== undefined) window.debugPos = s.debugPos;
+        if (typeof s.seekDurationMs === 'number') {
+            window.seekDurationMs = s.seekDurationMs;
+            const seekSec = Math.round(s.seekDurationMs / 1000);
+            const bBtn = document.getElementById('skipBackwardBtn');
+            if (bBtn) bBtn.title = `Rewind (${seekSec}s)`;
+            const fBtn = document.getElementById('skipForwardBtn');
+            if (fBtn) fBtn.title = `Forward (${seekSec}s)`;
+            const abBtn = document.getElementById('audioStationSeekBackBtn');
+            if (abBtn) abBtn.title = `Rewind (${seekSec}s)`;
+            const afBtn = document.getElementById('audioStationSeekFwdBtn');
+            if (afBtn) afBtn.title = `Forward (${seekSec}s)`;
+        }
+
+        if (typeof s.volume === 'number') {
+            currentVolume = s.volume;
+        }
+        if (s.isMuted !== undefined) {
+            applyMuteVisuals(s.isMuted === true);
+        } else if (typeof s.volume === 'number') {
+            applyMuteVisuals(isMuted);
+        }
+        
+        if (s.isAppLoading !== undefined) {
+            isAppLoading = s.isAppLoading === true;
+        }
+        if (s.loadingStatusText !== undefined && s.loadingStatusText !== null) {
+            const lStatus = document.getElementById('loadingStatus');
+            if (lStatus) lStatus.innerText = s.loadingStatusText;
+        }
+
+        if (s.interpolationEnabled !== undefined) {
+            interpolationEnabled = s.interpolationEnabled === true;
+            const btn = document.getElementById('btnToggleInterpolation');
+            if (btn) {
+                if (interpolationEnabled) {
+                    btn.classList.add('active');
+                    btn.innerText = 'On';
+                } else {
+                    btn.classList.remove('active');
+                    btn.innerText = 'Off';
+                }
+            }
+        }
+
+        if (s.autoPlayEnabled !== undefined) {
+            window.autoPlayEnabled = s.autoPlayEnabled === true;
+            const btn = document.getElementById('btnToggleAutoPlay');
+            if (btn) {
+                if (window.autoPlayEnabled) {
+                    btn.classList.add('active');
+                    btn.innerText = 'On';
+                } else {
+                    btn.classList.remove('active');
+                    btn.innerText = 'Off';
+                }
+            }
+            const epSwitch = document.getElementById('epAutoPlaySwitch');
+            if (epSwitch) {
+                epSwitch.classList.toggle('active', window.autoPlayEnabled);
+            }
+        }
+
+        if (s.showEndTime !== undefined) {
+            const btn = document.getElementById('btnToggleEndTime');
+            if (btn) {
+                if (s.showEndTime === true) {
+                    btn.classList.add('active');
+                    btn.innerText = 'On';
+                } else {
+                    btn.classList.remove('active');
+                    btn.innerText = 'Off';
+                }
+            }
+        }
+
+        if (s.showClock !== undefined) {
+            const btn = document.getElementById('btnToggleClock');
+            if (btn) {
+                if (s.showClock === true) {
+                    btn.classList.add('active');
+                    btn.innerText = 'On';
+                } else {
+                    btn.classList.remove('active');
+                    btn.innerText = 'Off';
+                }
+            }
+        }
+
+        if (s.showServerQuality !== undefined) {
+            const btn = document.getElementById('btnToggleServerQuality');
+            if (btn) {
+                if (s.showServerQuality === true) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            }
+        }
+
+        if (s.pauseInfoMode !== undefined && s.pauseInfoMode !== null) {
+            pauseInfoMode = s.pauseInfoMode;
+            updatePauseInfoBadge();
+        }
+
+        if (s.showPauseCast !== undefined && s.showPauseCast !== null) {
+            showPauseCast = !!s.showPauseCast;
+        }
+
+        evaluateUIStates();
+        evaluateResumeOverlay();
+    };
+
+    // Handles live MPV stats sent by C++ when stats panel is open
+    const handleStatsUpdate = (s) => {
+        const fmtBitrate = (bps) => {
+            if (!bps || bps <= 0) return '0 Kbps';
+            if (bps >= 1e6) return (bps / 1e6).toFixed(2) + ' Mbps';
+            return (bps / 1e3).toFixed(0) + ' Kbps';
+        };
+        const fps = s.fps || 0;
+        const dropped = (s.droppedFrames || 0) + (s.voDroppedFrames || 0);
+
+        const badge = document.getElementById('statsBadgeFps');
+        if (badge) badge.innerText = fps > 0 ? fps.toFixed(1) + ' fps' : '-- fps';
+
+        const setVal = (id, v, cls) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.innerText = (v !== undefined && v !== null && v !== 'N/A') ? v : 'N/A';
+            el.className = 'stats-val' + (cls ? ' ' + cls : '');
+        };
+
+        const vId = window.sessionId ? window.sessionId.substring(0, 16) : 'Unknown';
+        const vcpn = Math.random().toString(36).substring(2, 6).toUpperCase();
+        setVal('sVideoId', `${vId} / ${vcpn}`);
+
+        const width = window.innerWidth * window.devicePixelRatio;
+        const height = window.innerHeight * window.devicePixelRatio;
+        setVal('sViewportFrames', `${Math.round(width)}x${Math.round(height)}*${window.devicePixelRatio.toFixed(2)} / ${dropped} dropped`);
+
+        const vWidth = s.width || 0;
+        const vHeight = s.height || 0;
+        const resStr = (vWidth && vHeight) ? `${vWidth}x${vHeight}@${fps > 0 ? Math.round(fps) : 30}` : 'Unknown';
+        setVal('sCurrentOptimalRes', `${resStr} / ${resStr}`);
+
+        const vol = Math.round((window.currentVolume || 1.0) * 100);
+        setVal('sVolumeNormalized', `${vol}% / ${vol}% (content loudness -- dB)`);
+
+        const vCodec = s.videoCodec || 'unknown';
+        const aCodec = s.audioCodec || 'unknown';
+        const cProfile = s.videoFormat || '';
+        setVal('sCodecs', `${vCodec} (${cProfile}) / ${aCodec} (${s.audioChannels || '2'})`);
+
+        const colorMatrix = s.colorMatrix && s.colorMatrix !== 'N/A' ? s.colorMatrix : '';
+        const colorPrimaries = s.colorPrimaries && s.colorPrimaries !== 'N/A' ? s.colorPrimaries : '';
+        const colorLevels = s.colorLevels && s.colorLevels !== 'N/A' ? s.colorLevels : '';
+        const colorInfo = [colorMatrix, colorPrimaries, colorLevels].filter(x => x).join(' / ') || 'bt709 / bt709';
+        setVal('sColorInfo', colorInfo);
+
+        let host = 'localhost';
+        try {
+            if (s.path && s.path.startsWith('http')) {
+                host = new URL(s.path).host;
+            }
+        } catch(e){}
+        setVal('sHost', host);
+
+        setVal('sConnectionSpeed', fmtBitrate((s.videoBitrate || 0) + (s.audioBitrate || 0)));
+        setVal('sNetworkActivity', '0 KB');
+
+        const bufAhead = durationMs > 0 ? ((s.bufferMs || 0) - currentPosMs) / 1000 : null;
+        setVal('sBuffer', bufAhead !== null && bufAhead >= 0 ? bufAhead.toFixed(1) + ' s' : '0.0 s');
+
+        setVal('sLiveLatency', durationMs > 0 ? 'N/A' : '0.00 s');
+
+        const sRate = s.audioSampleRate || 0;
+        setVal('sAudioCodec', `${aCodec} (${sRate > 0 ? (sRate/1000).toFixed(1) + 'kHz' : ''})`);
+
+        const sync = s.avsync !== undefined && s.avsync !== null ? s.avsync : 0;
+        setVal('sAvSync', sync !== 0 ? (sync * 1000).toFixed(1) + ' ms' : '0.0 ms', Math.abs(sync) > 0.05 ? 'warn' : '');
+
+        const hwdec = (s.hwdec && s.hwdec !== 'no' && s.hwdec !== 'N/A') ? s.hwdec : 'Software (CPU)';
+        setVal('sHwdec', hwdec, hwdec !== 'Software (CPU)' ? 'good' : '');
+
+        setVal('sMysteryText', `vd: ${vWidth} / ad: ${s.audioChannels || 2} / s: ${Math.round(fps)}`);
+
+        const pathEl = document.getElementById('sPath');
+        if (pathEl) {
+            pathEl.innerText = s.path || '--';
+            pathEl.title = s.path || '';
+        }
+    };
+
+    const formatP2pSpeed = (bytesPerSec) => {
+        if (!bytesPerSec || bytesPerSec <= 0) return '0 KB/s';
+        if (bytesPerSec >= 1024 * 1024) {
+            return (bytesPerSec / (1024 * 1024)).toFixed(1) + ' MB/s';
+        }
+        return (bytesPerSec / 1024).toFixed(0) + ' KB/s';
+    };
+
+    const handleP2pStatsUpdate = (p) => {
+        const hudPill = document.getElementById('p2pHudPill');
+        const hudSpeed = document.getElementById('p2pHudSpeed');
+        const hudSeeds = document.getElementById('p2pHudSeeds');
+        const loadingStats = document.getElementById('p2pLoadingStats');
+        const preloadFill = document.getElementById('p2pPreloadFill');
+        const preloadDetail = document.getElementById('p2pPreloadDetail');
+
+        if (p && p.active) {
+            if (hudPill) hudPill.style.display = 'inline-flex';
+            if (hudSpeed) hudSpeed.innerText = '↓ ' + formatP2pSpeed(p.downloadSpeed);
+            if (hudSeeds) hudSeeds.innerText = `${p.seeds || 0} Seeds · ${p.peers || 0} Peers`;
+
+            const loadingContainer = document.getElementById('loadingContainer');
+            const isBuffering = loadingContainer && loadingContainer.classList.contains('show');
+
+            if (loadingStats) {
+                if (isBuffering || (p.progressPercent > 0 && p.progressPercent < 100)) {
+                    loadingStats.style.display = 'flex';
+                    if (preloadFill) preloadFill.style.width = Math.min(100, Math.max(0, p.progressPercent)) + '%';
+                    if (preloadDetail) {
+                        const stateMsg = p.statusText || 'Preloading Buffer';
+                        preloadDetail.innerText = `${stateMsg} • ${p.seeds || 0} Seeds • ${formatP2pSpeed(p.downloadSpeed)}`;
+                    }
+                } else {
+                    loadingStats.style.display = 'none';
+                }
+            }
+        } else {
+            if (hudPill) hudPill.style.display = 'none';
+            if (loadingStats) loadingStats.style.display = 'none';
+        }
+    };
+
+    const handleMessage = (data) => {
+        try {
+            // WebView2 PostWebMessageAsJson delivers the message as EITHER:
+            //   - a string (when received via window.chrome.webview 'message' event e.data)
+            //   - an already-parsed object (in some WebView2 versions / paths)
+            // We must handle both cases.
+            const p = (typeof data === 'string') ? JSON.parse(data) :
+                      (data && typeof data === 'object') ? data :
+                      JSON.parse(String(data));
+            if (!p || !p.type) return;
+            if (p.type === 'state_update') handleStateUpdate(p);
+            else if (p.type === 'app_state_update') handleAppStateUpdate(p);
+            else if (p.type === 'stats_update') handleStatsUpdate(p);
+            else if (p.type === 'p2p_stats_update') handleP2pStatsUpdate(p);
+            else if (p.type === 'metadata_update') handleMetadataUpdate(p.value);
+            else if (p.type === 'dismiss_probing') dismissProbingOverlay(true);
+            else if (p.type === 'subtitle_search_results') handleSubtitleSearchResults(p);
+            else if (p.type === 'show_toast') showToast(p.message);
+        } catch(e) {
+            console.error('[handleMessage Error]', e);
+            try {
+                send('clientLog', `[handleMessage Error] ${e && e.message ? e.message : e}`);
+            } catch(_) {}
+            // If JSON.parse fails on raw string, try treating it as JSON directly
+            try {
+                if (typeof data === 'string' && data.includes('dismiss_probing')) {
+                    dismissProbingOverlay();
+                }
+            } catch(_) {}
+        }
+    };
+
+    // window.playerUpdate is the legacy path used by some Kotlin callers that
+    // call executeScript("window.playerUpdate(...)") directly
+    window.playerUpdate = handleMessage;
+
+    if (window.chrome && window.chrome.webview) {
+        if (!window._msgListenerAttached) {
+            window._msgListenerAttached = true;
+            window.chrome.webview.addEventListener('message', e => {
+                // e.data from PostWebMessageAsJson is already parsed in WebView2
+                handleMessage(e.data);
+            });
+        }
+    }
+
+    // Subtitle Search Modal
+    // ── Subtitle Search Modal & Custom Dropdown ──────────────────────────────
+    const ALL_SUB_LANGUAGES = [
+        { code: '', label: 'All Languages', badge: 'ALL', popular: true },
+        { code: 'en', label: 'English', badge: 'ENG', popular: true },
+        { code: 'es', label: 'Spanish', badge: 'ESP', popular: true },
+        { code: 'fr', label: 'French', badge: 'FRA', popular: true },
+        { code: 'de', label: 'German', badge: 'DEU', popular: true },
+        { code: 'pt', label: 'Portuguese', badge: 'POR', popular: true },
+        { code: 'it', label: 'Italian', badge: 'ITA', popular: true },
+        { code: 'ar', label: 'Arabic', badge: 'ARA', popular: true },
+        { code: 'hi', label: 'Hindi', badge: 'HIN', popular: true },
+        { code: 'ru', label: 'Russian', badge: 'RUS', popular: true },
+        { code: 'ja', label: 'Japanese', badge: 'JPN', popular: true },
+        { code: 'ko', label: 'Korean', badge: 'KOR', popular: true },
+        { code: 'zh', label: 'Chinese', badge: 'ZHO', popular: true },
+        { code: 'tr', label: 'Turkish', badge: 'TUR', popular: true },
+        { code: 'nl', label: 'Dutch', badge: 'NLD', popular: true },
+        { code: 'pl', label: 'Polish', badge: 'POL', popular: true },
+        { code: 'id', label: 'Indonesian', badge: 'IND', popular: true },
+        { code: 'vi', label: 'Vietnamese', badge: 'VIE', popular: true },
+        { code: 'th', label: 'Thai', badge: 'THA', popular: true },
+        { code: 'af', label: 'Afrikaans', badge: 'AFR' },
+        { code: 'sq', label: 'Albanian', badge: 'ALB' },
+        { code: 'am', label: 'Amharic', badge: 'AMH' },
+        { code: 'hy', label: 'Armenian', badge: 'ARM' },
+        { code: 'az', label: 'Azerbaijani', badge: 'AZE' },
+        { code: 'eu', label: 'Basque', badge: 'BAQ' },
+        { code: 'be', label: 'Belarusian', badge: 'BEL' },
+        { code: 'bn', label: 'Bengali', badge: 'BEN' },
+        { code: 'bs', label: 'Bosnian', badge: 'BOS' },
+        { code: 'bg', label: 'Bulgarian', badge: 'BUL' },
+        { code: 'my', label: 'Burmese', badge: 'MYA' },
+        { code: 'ca', label: 'Catalan', badge: 'CAT' },
+        { code: 'hr', label: 'Croatian', badge: 'HRV' },
+        { code: 'cs', label: 'Czech', badge: 'CZE' },
+        { code: 'da', label: 'Danish', badge: 'DAN' },
+        { code: 'et', label: 'Estonian', badge: 'EST' },
+        { code: 'tl', label: 'Filipino', badge: 'FIL' },
+        { code: 'fi', label: 'Finnish', badge: 'FIN' },
+        { code: 'gl', label: 'Galician', badge: 'GLG' },
+        { code: 'ka', label: 'Georgian', badge: 'GEO' },
+        { code: 'el', label: 'Greek', badge: 'ELL' },
+        { code: 'gu', label: 'Gujarati', badge: 'GUJ' },
+        { code: 'he', label: 'Hebrew', badge: 'HEB' },
+        { code: 'hu', label: 'Hungarian', badge: 'HUN' },
+        { code: 'is', label: 'Icelandic', badge: 'ISL' },
+        { code: 'kn', label: 'Kannada', badge: 'KAN' },
+        { code: 'kk', label: 'Kazakh', badge: 'KAZ' },
+        { code: 'km', label: 'Khmer', badge: 'KHM' },
+        { code: 'ku', label: 'Kurdish', badge: 'KUR' },
+        { code: 'lo', label: 'Lao', badge: 'LAO' },
+        { code: 'lv', label: 'Latvian', badge: 'LAV' },
+        { code: 'lt', label: 'Lithuanian', badge: 'LIT' },
+        { code: 'mk', label: 'Macedonian', badge: 'MKD' },
+        { code: 'ms', label: 'Malay', badge: 'MAY' },
+        { code: 'ml', label: 'Malayalam', badge: 'MAL' },
+        { code: 'mr', label: 'Marathi', badge: 'MAR' },
+        { code: 'mn', label: 'Mongolian', badge: 'MON' },
+        { code: 'ne', label: 'Nepali', badge: 'NEP' },
+        { code: 'no', label: 'Norwegian', badge: 'NOR' },
+        { code: 'fa', label: 'Persian', badge: 'PER' },
+        { code: 'pa', label: 'Punjabi', badge: 'PAN' },
+        { code: 'ro', label: 'Romanian', badge: 'RON' },
+        { code: 'sr', label: 'Serbian', badge: 'SRP' },
+        { code: 'si', label: 'Sinhala', badge: 'SIN' },
+        { code: 'sk', label: 'Slovak', badge: 'SLK' },
+        { code: 'sl', label: 'Slovenian', badge: 'SLV' },
+        { code: 'so', label: 'Somali', badge: 'SOM' },
+        { code: 'sw', label: 'Swahili', badge: 'SWA' },
+        { code: 'sv', label: 'Swedish', badge: 'SWE' },
+        { code: 'ta', label: 'Tamil', badge: 'TAM' },
+        { code: 'te', label: 'Telugu', badge: 'TEL' },
+        { code: 'uk', label: 'Ukrainian', badge: 'UKR' },
+        { code: 'ur', label: 'Urdu', badge: 'URD' },
+        { code: 'uz', label: 'Uzbek', badge: 'UZB' },
+        { code: 'yi', label: 'Yiddish', badge: 'YID' },
+    ];
+
+    window.toggleCustomLangDropdown = (e) => {
+        if (e) e.stopPropagation();
+        const popover = document.getElementById('customLangPopover');
+        const trigger = document.getElementById('customLangTrigger');
+        if (!popover) return;
+        const isOpen = popover.style.display === 'flex';
+        if (isOpen) {
+            popover.style.display = 'none';
+        } else {
+            popover.style.display = 'flex';
+            renderCustomLangOptions('');
+            const searchInp = document.getElementById('customLangSearchInput');
+            if (searchInp) {
+                searchInp.value = '';
+                searchInp.focus();
+            }
+        }
+    };
+
+    window.filterCustomLanguages = (query) => {
+        renderCustomLangOptions(query.trim().toLowerCase());
+    };
+
+    window.selectCustomLanguage = (code, label) => {
+        const hiddenInp = document.getElementById('subSearchLang');
+        const labelEl = document.getElementById('selectedLangLabel');
+        const popover = document.getElementById('customLangPopover');
+        if (hiddenInp) hiddenInp.value = code;
+        if (labelEl) labelEl.innerText = label;
+        if (popover) popover.style.display = 'none';
+    };
+
+    const renderCustomLangOptions = (filterText) => {
+        const listEl = document.getElementById('customLangOptionsList');
+        if (!listEl) return;
+        const currentCode = document.getElementById('subSearchLang')?.value || '';
+
+        let filtered = ALL_SUB_LANGUAGES;
+        if (filterText) {
+            filtered = ALL_SUB_LANGUAGES.filter(l => 
+                l.label.toLowerCase().includes(filterText) ||
+                l.badge.toLowerCase().includes(filterText) ||
+                l.code.toLowerCase().includes(filterText)
+            );
+        }
+
+        if (filtered.length === 0) {
+            listEl.innerHTML = '<div style="color:#777;font-size:12px;text-align:center;padding:12px;">No languages found</div>';
+            return;
+        }
+
+        listEl.innerHTML = filtered.map(l => {
+            const isSelected = l.code === currentCode;
+            return `
+            <div class="custom-lang-option ${isSelected ? 'selected' : ''}" onclick="selectCustomLanguage('${l.code}', '${l.label}')">
+                <span>${l.label}</span>
+                <span class="custom-lang-option-badge">${l.badge}</span>
+            </div>`;
+        }).join('');
+    };
+
+    // Close language popover if clicking outside
+    document.addEventListener('click', (e) => {
+        const wrap = document.getElementById('customLangSelectWrap');
+        const popover = document.getElementById('customLangPopover');
+        if (popover && popover.style.display === 'flex' && wrap && !wrap.contains(e.target)) {
+            popover.style.display = 'none';
+        }
+    });
+
+    // Subtitle Search & View Switching Logic
+    const updateSearchTypeBadge = () => {
+        const typeBadge = document.getElementById('subSearchTypeBadge');
+        const sVal = document.getElementById('subSearchSeason')?.value?.trim();
+        const epVal = document.getElementById('subSearchEpisode')?.value?.trim();
+        if (!typeBadge) return;
+        if (sVal || epVal) {
+            const sNum = sVal ? parseInt(sVal, 10) : 1;
+            const epNum = epVal ? parseInt(epVal, 10) : 1;
+            typeBadge.innerText = `S${String(sNum).padStart(2, '0')} E${String(epNum).padStart(2, '0')}`;
+            typeBadge.style.color = '#90caf9';
+            typeBadge.style.borderColor = 'rgba(33, 150, 243, 0.3)';
+        } else {
+            typeBadge.innerText = 'Movie';
+            typeBadge.style.color = 'rgba(255, 255, 255, 0.6)';
+            typeBadge.style.borderColor = 'rgba(255, 255, 255, 0.12)';
+        }
+    };
+    window.updateSearchTypeBadge = updateSearchTypeBadge;
+
+    const switchToSubSearchView = (autoTriggerSearch = false) => {
+        const tracksHeader = document.getElementById('audioSubsTracksHeader');
+        const searchHeader = document.getElementById('audioSubsSearchHeader');
+        const tracksView = document.getElementById('audioSubsTracksView');
+        const tracksFooter = document.getElementById('audioSubsTracksFooter');
+        const searchView = document.getElementById('audioSubsSearchView');
+
+        if (tracksHeader) tracksHeader.style.display = 'none';
+        if (tracksView) tracksView.style.display = 'none';
+        if (tracksFooter) tracksFooter.style.display = 'none';
+
+        if (searchHeader) searchHeader.style.display = 'flex';
+        if (searchView) searchView.style.display = 'flex';
+
+        // Smart metadata extraction
+        const queryInput = document.getElementById('subSearchQuery');
+        const clearBtn = document.getElementById('subSearchClearBtn');
+        const seasonInput = document.getElementById('subSearchSeason');
+        const episodeInput = document.getElementById('subSearchEpisode');
+
+        const activeEp = (episodesData || []).find(e => e.isActive) ||
+                         (window.lastMeta?.episodes || []).find(e => e.isActive);
+
+        const rawTitle = (window.lastMeta?.title || currentTitle || '').trim();
+
+        // 1. Title Auto-population (only if user hasn't typed manually)
+        if (queryInput && !queryInput._userEdited) {
+            let cleanTitle = rawTitle;
+            if (cleanTitle) {
+                cleanTitle = cleanTitle.replace(/\s*-\s*(S\d+[:\s]*)?E(?:pisode)?\s*\d+.*$/i, '').trim();
+                if (cleanTitle.includes(' - ')) {
+                    cleanTitle = cleanTitle.replace(/\s*-\s*S(?:eason)?\s*\d+.*$/i, '').trim();
+                }
+            }
+            queryInput.value = cleanTitle;
+            if (clearBtn) clearBtn.style.display = cleanTitle ? 'flex' : 'none';
+        }
+
+        // 2. Season & Episode Auto-population (only if user hasn't typed manually)
+        let detectedSeason = '';
+        let detectedEpisode = '';
+
+        if (activeEp) {
+            if (activeEp.season !== undefined && activeEp.season !== null && activeEp.season > 0) {
+                detectedSeason = activeEp.season;
+            }
+            if (activeEp.episode !== undefined && activeEp.episode !== null && activeEp.episode > 0) {
+                detectedEpisode = activeEp.episode;
+            }
+        }
+
+        // Regex fallback from title string if metadata object didn't have explicit season/episode
+        if (!detectedSeason && rawTitle) {
+            const sMatch = rawTitle.match(/\bS(?:eason)?\s*(\d+)\b/i);
+            if (sMatch) detectedSeason = parseInt(sMatch[1], 10);
+        }
+        if (!detectedEpisode && rawTitle) {
+            const epMatch = rawTitle.match(/\bE(?:pisode)?\s*(\d+)\b/i);
+            if (epMatch) detectedEpisode = parseInt(epMatch[1], 10);
+        }
+
+        // If episode was found in a series but season was omitted, default season to 1
+        if (detectedEpisode && !detectedSeason) {
+            detectedSeason = 1;
+        }
+
+        if (seasonInput && !seasonInput._userEdited) {
+            seasonInput.value = detectedSeason !== '' ? detectedSeason : '';
+        }
+        if (episodeInput && !episodeInput._userEdited) {
+            episodeInput.value = detectedEpisode !== '' ? detectedEpisode : '';
+        }
+
+        updateSearchTypeBadge();
+
+        // Focus query input
+        setTimeout(() => {
+            queryInput?.focus();
+        }, 50);
+
+        // Auto-trigger search if clean query is present and no results yet
+        if (autoTriggerSearch && queryInput && queryInput.value.trim().length > 1 && !_cachedSearchResults) {
+            doSubSearch();
+        }
+    };
+    window.switchToSubSearchView = switchToSubSearchView;
+
+    const switchToSubTracksView = () => {
+        const tracksHeader = document.getElementById('audioSubsTracksHeader');
+        const searchHeader = document.getElementById('audioSubsSearchHeader');
+        const tracksView = document.getElementById('audioSubsTracksView');
+        const tracksFooter = document.getElementById('audioSubsTracksFooter');
+        const searchView = document.getElementById('audioSubsSearchView');
+        const langPopover = document.getElementById('customLangPopover');
+
+        if (searchHeader) searchHeader.style.display = 'none';
+        if (searchView) searchView.style.display = 'none';
+        if (langPopover) langPopover.style.display = 'none';
+
+        if (tracksHeader) tracksHeader.style.display = 'flex';
+        if (tracksView) tracksView.style.display = 'flex';
+        if (tracksFooter) tracksFooter.style.display = 'flex';
+    };
+    window.switchToSubTracksView = switchToSubTracksView;
+
+    window.openSubSearchModal = (autoSearch = false) => {
+        const popover = document.getElementById('audioSubsPopover');
+        if (popover && !popover.classList.contains('open')) {
+            togglePanel('audioSubsPopover');
+        }
+        switchToSubSearchView(autoSearch);
+    };
+
+    window.closeSubSearchModal = () => {
+        switchToSubTracksView();
+    };
+
+    window.showToast = (msg) => {
+        if (!msg) return;
+        let overlay = document.getElementById('toastOverlay');
+        if (!overlay) {
+            overlay = document.createElement('div');
+            overlay.id = 'toastOverlay';
+            document.body.appendChild(overlay);
+        }
+
+        // Deduplicate identical active toasts
+        const existingToasts = overlay.querySelectorAll('.hud-toast');
+        for (const t of existingToasts) {
+            if (t.dataset.msg === msg) return;
+        }
+
+        while (overlay.children.length >= 2) {
+            overlay.removeChild(overlay.firstChild);
+        }
+
+        const lower = msg.toLowerCase();
+        let toastType = 'info';
+        let title = msg;
+        let subtext = '';
+        let iconSvg = '';
+
+        if (lower.includes('failed') && (lower.includes('switching') || lower.includes('source') || lower.includes('next'))) {
+            toastType = 'warning';
+            title = 'Switching Source';
+            subtext = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>';
+        } else if (lower.startsWith('skipped')) {
+            toastType = 'skip';
+            title = msg;
+            subtext = '';
+            iconSvg = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>';
+        } else if (lower.startsWith('loaded subtitle:')) {
+            toastType = 'success';
+            title = 'Subtitle Loaded';
+            subtext = msg.substring('Loaded subtitle:'.length).trim();
+            iconSvg = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-9 9H7v-2h4v2zm7 0h-5v-2h5v2z"/></svg>';
+        } else if (lower.startsWith('failed to load subtitle:')) {
+            toastType = 'warning';
+            title = 'Subtitle Load Failed';
+            subtext = msg.substring('Failed to load subtitle:'.length).trim();
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>';
+        } else if (lower.startsWith('screenshot saved to')) {
+            toastType = 'success';
+            title = 'Screenshot Captured';
+            const dest = msg.substring('Screenshot saved to'.length).trim();
+            subtext = dest ? `Saved to ${dest}` : '';
+            iconSvg = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z"/></svg>';
+        } else if (lower.startsWith('now playing') || lower.includes('ready')) {
+            toastType = 'success';
+            title = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+        } else if (lower.startsWith('seek:')) {
+            toastType = 'info';
+            title = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>';
+        } else if (lower.startsWith('loop:')) {
+            toastType = 'info';
+            title = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 1l4 4-4 4m4-4H7a5 5 0 0 0-5 5v1m5 13l-4-4 4-4m-4 4h14a5 5 0 0 0 5-5v-1"/></svg>';
+        } else if (lower.includes('failed') || lower.includes('error') || lower.includes('falling back') || lower.includes('timeout')) {
+            toastType = 'warning';
+            title = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 9v4m0 4h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/></svg>';
+        } else {
+            toastType = 'info';
+            title = msg;
+            iconSvg = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4m0-4h.01"/></svg>';
+        }
+
+        const toast = document.createElement('div');
+        toast.className = `hud-toast ${toastType}`;
+        toast.dataset.msg = msg;
+
+        const iconWrap = document.createElement('div');
+        iconWrap.className = 'hud-toast-icon-wrap';
+        iconWrap.innerHTML = iconSvg;
+
+        const content = document.createElement('div');
+        content.className = 'hud-toast-content';
+
+        const titleEl = document.createElement('div');
+        titleEl.className = 'hud-toast-title';
+        titleEl.textContent = title;
+        content.appendChild(titleEl);
+
+        if (subtext) {
+            const subtextEl = document.createElement('div');
+            subtextEl.className = 'hud-toast-subtext';
+            subtextEl.textContent = subtext;
+            content.appendChild(subtextEl);
+        }
+
+        toast.appendChild(iconWrap);
+        toast.appendChild(content);
+        overlay.appendChild(toast);
+
+        requestAnimationFrame(() => {
+            toast.classList.add('show');
+        });
+
+        const displayDuration = toastType === 'warning' ? 3600 : 2500;
+        setTimeout(() => {
+            toast.classList.remove('show');
+            setTimeout(() => toast.remove(), 260);
+        }, displayDuration);
+    };
+
+    // Subtitle Search Execution
+    window.doSubSearch = () => {
+        const query   = document.getElementById('subSearchQuery')?.value?.trim() || '';
+        const lang    = document.getElementById('subSearchLang')?.value || '';
+        const season  = document.getElementById('subSearchSeason')?.value?.trim() || '';
+        const episode = document.getElementById('subSearchEpisode')?.value?.trim() || '';
+        if (!query) {
+            document.getElementById('subSearchQuery')?.focus();
+            return;
+        }
+
+        const resultsEl  = document.getElementById('subSearchResults');
+        const statusEl   = document.getElementById('subSearchStatus');
+        const chipsEl    = document.getElementById('subSearchChipsContainer');
+        const searchBtn  = document.getElementById('subSearchBtn');
+        const btnText    = document.getElementById('subSearchBtnText');
+        const spinner    = document.getElementById('subSearchSpinner');
+
+        if (resultsEl) resultsEl.innerHTML = '';
+        if (chipsEl) { chipsEl.innerHTML = ''; chipsEl.style.display = 'none'; }
+        if (statusEl) {
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;gap:10px;"><div class="subsearch-spinner"></div><span>Searching online providers...</span></div>';
+        }
+
+        if (searchBtn) searchBtn.style.pointerEvents = 'none';
+        if (btnText) btnText.style.display = 'none';
+        if (spinner) spinner.style.display = 'block';
+
+        const imdbId = (window.lastMeta && window.lastMeta.imdbId) || '';
+        send('searchSubtitles', JSON.stringify({ query, lang, season, episode, imdbId }));
+    };
+
+    // Render Subtitle Results with Quick Filters
+    let _cachedSearchResults = [];
+    let _activeFilterLang = 'all';
+
+    const handleSubtitleSearchResults = (p) => {
+        const statusEl   = document.getElementById('subSearchStatus');
+        const resultsEl  = document.getElementById('subSearchResults');
+        const chipsEl    = document.getElementById('subSearchChipsContainer');
+        const searchBtn  = document.getElementById('subSearchBtn');
+        const btnText    = document.getElementById('subSearchBtnText');
+        const spinner    = document.getElementById('subSearchSpinner');
+
+        if (searchBtn) searchBtn.style.pointerEvents = 'auto';
+        if (btnText) btnText.style.display = 'block';
+        if (spinner) spinner.style.display = 'none';
+
+        if (!resultsEl) return;
+        if (statusEl) statusEl.style.display = 'none';
+
+        const results = p.results || [];
+        _cachedSearchResults = results;
+        _activeFilterLang = 'all';
+
+        if (results.length === 0) {
+            resultsEl.innerHTML = `
+            <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:36px;color:#777;gap:12px;">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" style="opacity:0.6;"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm3.5-9c.83 0 1.5-.67 1.5-1.5S16.33 8 15.5 8 14 8.67 14 9.5s.67 1.5 1.5 1.5zm-7 0c.83 0 1.5-.67 1.5-1.5S9.33 8 8.5 8 7 8.67 7 9.5 7.67 11 8.5 11zm3.5 3c-2.33 0-4.31 1.46-5.11 3.5h10.22c-.8-2.04-2.78-3.5-5.11-3.5z"/></svg>
+                <div style="font-size:14px;font-weight:500;">No subtitles found</div>
+                <div style="font-size:12px;color:#666;">Try adjusting the title or switching language filter to "All".</div>
+            </div>`;
+            return;
+        }
+
+        // Build Language Counts for Quick Filter Chips
+        const langCounts = {};
+        results.forEach(r => {
+            const l = (r.langName || r.lang || 'Other');
+            langCounts[l] = (langCounts[l] || 0) + 1;
+        });
+
+        if (chipsEl && Object.keys(langCounts).length > 1) {
+            chipsEl.style.display = 'flex';
+            let chipHtml = `<div class="subsearch-quick-chip active" data-lang="all" onclick="filterSubResults('all')">All (${results.length})</div>`;
+            for (const [langName, count] of Object.entries(langCounts)) {
+                chipHtml += `<div class="subsearch-quick-chip" data-lang="${langName}" onclick="filterSubResults('${langName}')">${langName} (${count})</div>`;
+            }
+            chipsEl.innerHTML = chipHtml;
+        }
+
+        renderFilteredResults();
+    };
+
+    window.filterSubResults = (langName) => {
+        _activeFilterLang = langName;
+        const chips = document.querySelectorAll('.subsearch-quick-chip');
+        chips.forEach(c => {
+            if (c.dataset.lang === langName) c.classList.add('active');
+            else c.classList.remove('active');
+        });
+        renderFilteredResults();
+    };
+
+    const renderFilteredResults = () => {
+        const resultsEl = document.getElementById('subSearchResults');
+        if (!resultsEl) return;
+
+        let filtered = _cachedSearchResults;
+        if (_activeFilterLang !== 'all') {
+            filtered = _cachedSearchResults.filter(r => (r.langName || r.lang || 'Other') === _activeFilterLang);
+        }
+
+        if (filtered.length === 0) {
+            resultsEl.innerHTML = '<div style="color:#888;font-size:13px;text-align:center;padding:24px;">No subtitles for selected filter.</div>';
+            return;
+        }
+
+        resultsEl.innerHTML = filtered.map((r, i) => {
+            const originalIndex = _cachedSearchResults.indexOf(r);
+            const badge = (r.langBadge || (r.lang || '??').substring(0, 3)).toUpperCase();
+            const name = (r.name || 'Unknown Subtitle');
+            const source = r.source || 'Online Provider';
+            const epTag = [
+                r.seasonNumber ? `S${String(r.seasonNumber).padStart(2,'0')}` : '',
+                r.epNumber     ? `E${String(r.epNumber).padStart(2,'0')}` : ''
+            ].filter(Boolean).join(' ');
+
+            // Badge Color Class
+            let badgeClass = 'other';
+            if (badge === 'ENG') badgeClass = 'eng';
+            else if (badge === 'ESP' || badge === 'SPA' || badge === 'SPL') badgeClass = 'esp';
+            else if (badge === 'FRA' || badge === 'FRE') badgeClass = 'fra';
+            else if (badge === 'DEU' || badge === 'GER') badgeClass = 'deu';
+            else if (badge === 'ARA') badgeClass = 'ara';
+            else if (badge === 'HIN') badgeClass = 'hin';
+            else if (badge === 'POR' || badge === 'POB') badgeClass = 'por';
+
+            return `
+            <div class="sub-result-item" onclick="downloadSubtitle(event, ${originalIndex})">
+                <div class="sub-lang-pill ${badgeClass}">${badge}</div>
+                <div style="flex:1;min-width:0;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <span style="color:#f0f0f0;font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${name}</span>
+                        ${epTag ? `<span style="color:#90caf9;background:rgba(33,150,243,0.12);border:1px solid rgba(33,150,243,0.25);padding:1px 6px;border-radius:5px;font-size:11px;font-weight:700;white-space:nowrap;">${epTag}</span>` : ''}
+                    </div>
+                    <div style="color:#777;font-size:12px;margin-top:3px;display:flex;align-items:center;gap:5px;">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zm6.93 6h-2.95c-.32-1.25-.78-2.45-1.38-3.56 1.84.63 3.37 1.91 4.33 3.56zM12 4.04c.83 1.2 1.48 2.53 1.91 3.96h-3.82c.43-1.43 1.08-2.76 1.91-3.96zM4.26 14C4.1 13.36 4 12.69 4 12s.1-1.36.26-2h3.38c-.08.66-.14 1.32-.14 2 0 .68.06 1.34.14 2H4.26zm.82 2h2.95c.32 1.25.78 2.45 1.38 3.56-1.84-.63-3.37-1.9-4.33-3.56zm2.95-8H5.08c.96-1.66 2.49-2.93 4.33-3.56C8.81 5.55 8.35 6.75 8.03 8zM12 19.96c-.83-1.2-1.48-2.53-1.91-3.96h3.82c-.43 1.43-1.08 2.76-1.91 3.96zM14.34 14H9.66c-.09-.66-.16-1.32-.16-2 0-.68.07-1.35.16-2h4.68c.09.65.16 1.32.16 2 0 .68-.07 1.34-.16 2zm.25 5.56c.6-1.11 1.06-2.31 1.38-3.56h2.95c-.96 1.65-2.49 2.93-4.33 3.56zM16.36 14c.08-.66.14-1.32.14-2 0-.68-.06-1.34-.14-2h3.38c.16.64.26 1.31.26 2s-.1 1.36-.26 2h-3.38z"/></svg>
+                        <span>${source}</span>
+                    </div>
+                </div>
+                <button class="sub-download-btn" id="subDlBtn_${originalIndex}" onclick="downloadSubtitle(event, ${originalIndex})" title="Download and Apply Subtitle">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+                </button>
+            </div>`;
+        }).join('');
+    };
+
+    window.downloadSubtitle = (e, index) => {
+        if (e) e.stopPropagation();
+        const results = _cachedSearchResults;
+        if (!results || !results[index]) {
+            console.error('[SubSearch] Invalid index:', index);
+            return;
+        }
+        const r = results[index];
+        console.log('[SubSearch] Downloading subtitle:', r);
+        
+        const btn = document.getElementById(`subDlBtn_${index}`) || (e ? e.currentTarget : null);
+        if (btn) {
+            btn.classList.add('downloading');
+            btn.innerHTML = '<div class="subsearch-spinner" style="width:16px;height:16px;border-width:2px;"></div>';
+        }
+
+        send('downloadSubtitle', JSON.stringify({
+            idPrefix: r.idPrefix || '',
+            data: r.data || '',
+            name: r.name || '',
+            lang: r.lang || '',
+            source: r.source || '',
+        }));
+        
+        // Brief success feedback then return to tracks view
+        setTimeout(() => {
+            if (btn) {
+                btn.classList.remove('downloading');
+                btn.classList.add('success');
+                btn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>';
+            }
+            setTimeout(() => {
+                switchToSubTracksView();
+            }, 450);
+        }, 400);
+    };
+
+    // Mark query and season/episode as user-edited
+    document.getElementById('subSearchQuery')?.addEventListener('input', function() {
+        this._userEdited = true;
+    });
+    document.getElementById('subSearchSeason')?.addEventListener('input', function() {
+        this._userEdited = true;
+        updateSearchTypeBadge();
+    });
+    document.getElementById('subSearchEpisode')?.addEventListener('input', function() {
+        this._userEdited = true;
+        updateSearchTypeBadge();
+    });
+
+    // Button Listeners
+    playPauseBtn.addEventListener('click', e => { 
+        e.stopPropagation(); 
+        send('togglePlay'); 
+        triggerActionFeedback(globalIsPlaying ? SVGS.pause : SVGS.play, 'center');
+    });
+
+    // Screen Click/Double-Click Zones logic
+    let clickCount = 0;
+    let clickTimer = null;
+    
+    // Hold-to-speed logic
+    let holdSpeedTimer = null;
+    let isHoldingSpeed = false;
+    let wasHoldingSpeed = false;
+    let originalSpeed = 1.0;
+    const holdSpeedHud = document.getElementById('holdSpeedHud');
+    const holdSpeedHudText = document.getElementById('holdSpeedHudText');
+    // speedMapping must match the one defined later
+    const holdSpeedMapping = [0.25, 0.35, 0.5, 0.65, 0.75, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+
+    const restoreHoldSpeed = () => {
+        if (!isHoldingSpeed) return;
+        isHoldingSpeed = false;
+        holdSpeedHud.classList.remove('show');
+        send('setMpvProperty', `speed:${originalSpeed}`);
+    };
+
+    const handleZoneHoldStart = (zoneName) => {
+        if (durationMs <= 0 || !globalIsPlaying) return; // Don't allow holding if paused or live stream
+        clearTimeout(holdSpeedTimer);
+        holdSpeedTimer = setTimeout(() => {
+            isHoldingSpeed = true;
+            const slider = document.getElementById('speedSlider');
+            originalSpeed = slider ? (holdSpeedMapping[parseInt(slider.value) + 6] || 1.0) : 1.0;
+            const newSpeed = zoneName === 'left' ? 0.5 : 2.0;
+            send('setMpvProperty', `speed:${newSpeed}`);
+            holdSpeedHudText.innerText = zoneName === 'left' ? '0.5x Speed' : '2x Speed';
+            holdSpeedHud.classList.add('show');
+            clickCount = 0; // Prevent the release from triggering a double-tap seek
+        }, 400); // Trigger after 400ms of holding
+    };
+
+    const handleZoneHoldEnd = () => {
+        clearTimeout(holdSpeedTimer);
+        if (isHoldingSpeed) {
+            wasHoldingSpeed = true;
+            setTimeout(() => { wasHoldingSpeed = false; }, 100);
+            restoreHoldSpeed();
+        }
+    };
+
+    const handleZoneClick = (zoneName, e) => {
+        e.stopPropagation();
+        if (wasHoldingSpeed) return;
+        clickCount++;
+        if (clickCount === 1) {
+            clickTimer = setTimeout(() => {
+                clickCount = 0;
+                send('togglePlay');
+                triggerActionFeedback(globalIsPlaying ? SVGS.pause : SVGS.play, 'center');
+                showControls();
+            }, 250);
+        } else if (clickCount === 2) {
+            clearTimeout(clickTimer);
+            clickCount = 0;
+            send('toggleFullscreen');
+        }
+    };
+
+    let isExiting = false;
+    function triggerExit() {
+        if (isExiting) return;
+        isExiting = true;
+        closeAllPanels();
+        document.getElementById('overlay').style.opacity = '0';
+        
+        const exitFade = document.createElement('div');
+        exitFade.style.position = 'fixed';
+        exitFade.style.top = '0'; exitFade.style.bottom = '0'; exitFade.style.left = '0'; exitFade.style.right = '0';
+        exitFade.style.backgroundColor = 'black';
+        exitFade.style.opacity = '0';
+        exitFade.style.pointerEvents = 'none';
+        exitFade.style.zIndex = '99999';
+        exitFade.style.transition = 'opacity 0.6s ease';
+        document.body.appendChild(exitFade);
+        
+        // Force reflow to start transition
+        void exitFade.offsetWidth;
+        exitFade.style.opacity = '1';
+        
+        setTimeout(() => {
+            send('exitPlayer');
+        }, 600);
+    }
+
+    zoneLeft.addEventListener('click', e => handleZoneClick('left', e));
+    zoneCenter.addEventListener('click', e => handleZoneClick('center', e));
+    zoneRight.addEventListener('click', e => handleZoneClick('right', e));
+
+    zoneLeft.addEventListener('mousedown', () => handleZoneHoldStart('left'));
+    zoneRight.addEventListener('mousedown', () => handleZoneHoldStart('right'));
+    zoneLeft.addEventListener('touchstart', () => handleZoneHoldStart('left'), {passive: true});
+    zoneRight.addEventListener('touchstart', () => handleZoneHoldStart('right'), {passive: true});
+
+    ['mouseup', 'mouseleave', 'touchend', 'touchcancel'].forEach(evt => {
+        zoneLeft.addEventListener(evt, handleZoneHoldEnd);
+        zoneRight.addEventListener(evt, handleZoneHoldEnd);
+    });
+
+    document.getElementById('probingPlayBtn').addEventListener('click', e => { 
+        e.stopPropagation(); 
+        const btn = e.currentTarget;
+        btn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V2A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8z"><animateTransform attributeName="transform" type="rotate" from="0 12 12" to="360 12 12" dur="1s" repeatCount="indefinite"/></path></svg> Skipping...`;
+        btn.style.opacity = '0.7';
+        btn.style.pointerEvents = 'none';
+        const pStatus = document.getElementById('linkProbingStatus');
+        if (pStatus) pStatus.innerText = 'Skipping discovery • Connecting to best source…';
+        dismissProbingOverlay(true);
+        send('skipScraping'); 
+    });
+    document.getElementById('probingCloseBtn').addEventListener('click', e => { e.stopPropagation(); triggerExit(); });
+    document.getElementById('probingRetryBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const retryBtn = e.currentTarget;
+        retryBtn.style.opacity = '0.7';
+        retryBtn.style.pointerEvents = 'none';
+        send('retryPlayback');
+    });
+    document.getElementById('probingServersBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        togglePanel('serversPanel');
+    });
+    document.getElementById('probingCopyDiagBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const diag = (window.lastMeta && window.lastMeta.exhaustionDiagnostics) || '';
+        send('copyDiagnostics', diag);
+    });
+    document.getElementById('probingBackBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        triggerExit();
+    });
+
+    fullscreenBtn.addEventListener('click', e => { e.stopPropagation(); send('toggleFullscreen'); });
+    const pipBtn = document.getElementById('pipBtn');
+    if (pipBtn) pipBtn.addEventListener('click', e => { e.stopPropagation(); send('togglePip'); });
+    backBtn.addEventListener('click', e => { e.stopPropagation(); triggerExit(); });
+    muteBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        const nextMuted = !isMuted;
+        applyMuteVisuals(nextMuted);
+        send('toggleMute');
+    });
+    document.getElementById('skipBackwardBtn').addEventListener('click', e => {
+        e.stopPropagation();
+        const seekMs = window.seekDurationMs || 10000;
+        doRelativeSeek(-seekMs);
+    });
+    document.getElementById('skipForwardBtn').addEventListener('click', e => {
+        e.stopPropagation();
+        const seekMs = window.seekDurationMs || 10000;
+        doRelativeSeek(seekMs);
+    });
+
+    const performSkipInterval = (e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        const r = document.getElementById('resumeOverlay');
+        if (r) r.style.display = 'none';
+        const sBtn = document.getElementById('skipBtn');
+        if (sBtn) {
+            sBtn.style.display = 'none';
+            sBtn.classList.remove('idle-faded');
+            window._skipBtnActiveSince = 0;
+        }
+
+        send('skipInterval');
+    };
+
+    const skipBtnElem = document.getElementById('skipBtn');
+    if (skipBtnElem) {
+        skipBtnElem.addEventListener('click', performSkipInterval);
+        skipBtnElem.addEventListener('pointerdown', e => e.stopPropagation());
+    }
+
+    const triggerNextEpisode = () => {
+        if (endCountdownTimer) clearInterval(endCountdownTimer);
+        send('hideVideoEnded', '1');
+        videoEndedOverlay.style.display = 'none';
+        evaluateUIStates();
+        document.getElementById('overlay').style.opacity = '';
+        forceShowLoading();
+        if (episodesData && currentEpisodeId) {
+            const curEp = episodesData.find(e => e.id === currentEpisodeId);
+            if (curEp) {
+                curEp.isSeen = true;
+                curEp.watchedPercentage = 100;
+            }
+        }
+        send('loadNextEpisode');
+    };
+    nextEpBtn.addEventListener('click', e => { e.stopPropagation(); triggerNextEpisode(); });
+
+    // ── Next Episode Hover Card Logic ─────────────────────────────
+    let nextEpPreviewTimer = null;
+    const nextEpWrapper = document.getElementById('nextEpBtnWrapper');
+    const nextEpCard = document.getElementById('nextEpPreviewCard');
+
+    function updateNextEpPreview() {
+        if (!episodesData || episodesData.length === 0) return false;
+        const activeIdx = episodesData.findIndex(e => e.isActive);
+        const nextEp = (activeIdx !== -1 && activeIdx < episodesData.length - 1) ? episodesData[activeIdx + 1] : null;
+        if (!nextEp || !nextEpCard) return false;
+
+        const thumb = document.getElementById('nextEpPreviewThumb');
+        const title = document.getElementById('nextEpPreviewTitle');
+        const metaEl = document.getElementById('nextEpPreviewMeta');
+        const desc = document.getElementById('nextEpPreviewDesc');
+
+        const epNum = nextEp.episode || (activeIdx + 2);
+        const epTitle = nextEp.title ? nextEp.title : `Episode ${epNum}`;
+        if (title) title.innerText = epTitle;
+
+        let dateStr = '';
+        const dateMatch = (nextEp.description || '').match(/\|\|DATE:(.*?)\|\|/i);
+        if (dateMatch) {
+            dateStr = dateMatch[1].trim();
+        } else if (nextEp.date) {
+            dateStr = nextEp.date;
+        }
+
+        const metaParts = [];
+        const sNum = (nextEp.season !== undefined && nextEp.season !== null) ? nextEp.season : 1;
+        metaParts.push(`S${sNum} E${epNum}`);
+        if (dateStr) metaParts.push(dateStr);
+        if (nextEp.runTime) metaParts.push(`${nextEp.runTime}m`);
+        if (metaEl) metaEl.innerText = metaParts.join(' • ');
+
+        const cleanDesc = (nextEp.description || '').replace(/\|\|DATE:.*?\|\|/gi, '').trim();
+        if (desc) desc.innerText = cleanDesc || 'No episode description available.';
+
+        if (thumb) {
+            const fallbackBackdrop = (window.lastMeta && window.lastMeta.backdropUrl) || '';
+            const targetSrc = nextEp.posterUrl || fallbackBackdrop || '';
+            if (targetSrc) {
+                thumb.src = targetSrc;
+                thumb.style.display = 'block';
+            } else {
+                thumb.style.display = 'none';
+            }
+        }
+        return true;
+    }
+
+    if (nextEpWrapper && nextEpCard) {
+        nextEpWrapper.addEventListener('mouseenter', () => {
+            if (nextEpBtn.classList.contains('hidden')) return;
+            clearTimeout(nextEpPreviewTimer);
+            if (updateNextEpPreview()) {
+                nextEpCard.classList.add('visible');
+            }
+        });
+
+        nextEpWrapper.addEventListener('mouseleave', () => {
+            clearTimeout(nextEpPreviewTimer);
+            nextEpPreviewTimer = setTimeout(() => {
+                nextEpCard.classList.remove('visible');
+            }, 150);
+        });
+
+        nextEpCard.addEventListener('click', (e) => {
+            e.stopPropagation();
+            nextEpCard.classList.remove('visible');
+            triggerNextEpisode();
+        });
+    }
+
+    episodesBtn.addEventListener('click', e => { e.stopPropagation(); togglePanel('episodesPanel'); });
+    chaptersBtn?.addEventListener('click', e => { e.stopPropagation(); togglePanel('chaptersPanel'); });
+    document.getElementById('serversBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('serversPanel'); });
+    document.getElementById('subtitlesBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('subsPanel'); });
+    document.getElementById('settingsBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('settingsPanel'); });
+    document.getElementById('qualityBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('qualityPanel'); });
+    document.getElementById('audioBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('audioPanel'); });
+    document.getElementById('speedBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('speedPanel'); });
+    document.getElementById('aspectBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('aspectPanel'); });
+
+    // Capsule Buttons (Quality & Server, Audio & Subtitles)
+    document.getElementById('qualityServerBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        togglePanel('qualityServerPopover');
+    });
+    document.getElementById('audioSubsBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        togglePanel('audioSubsPopover');
+    });
+
+    // Popover inline controls: Speed chips, Gear, Upload sub, Sub search, Customize
+    document.querySelectorAll('#speedChipsRow .cs-speed-chip').forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const sp = parseFloat(chip.dataset.speed);
+            if (!isNaN(sp)) {
+                send('setSpeed', sp);
+                if (typeof syncSpeedBadge === 'function') syncSpeedBadge(sp);
+            }
+        });
+    });
+    document.getElementById('popoverGearBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllPanels();
+        togglePanel('settingsPanel');
+    });
+    document.getElementById('uploadSubBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllPanels();
+        send('openLocalSubtitlePicker', '');
+    });
+    document.getElementById('popoverSearchSubsBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        switchToSubSearchView(false);
+    });
+    document.getElementById('subSearchBackBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        switchToSubTracksView();
+    });
+    document.getElementById('popoverCustomizeSubsBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllPanels();
+        togglePanel('subsPanel');
+        const styleTabBtn = document.querySelector('.settings-tab-btn[data-tab-target="sub-style"]');
+        if (styleTabBtn) styleTabBtn.click();
+    });
+    document.getElementById('popoverAudioSettingsBtn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllPanels();
+        togglePanel('settingsPanel');
+        const audioTabBtn = document.querySelector('.settings-tab-btn[data-tab-target="set-audio"]');
+        if (audioTabBtn) audioTabBtn.click();
+    });
+    document.getElementById('playerModalBackdrop')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllPanels();
+    });
+    const triggerPrevEpisode = () => {
+        if (episodesData && episodesData.length > 0) {
+            const activeIdx = episodesData.findIndex(e => e.isActive);
+            if (activeIdx > 0) {
+                const prevEp = episodesData[activeIdx - 1];
+                if (prevEp && prevEp.id) {
+                    forceShowLoading();
+                    send('loadEpisode', prevEp.id);
+                }
+            }
+        }
+    };
+
+    // ── Dedicated Audio Station Listeners ─────────────────────────────
+    document.getElementById('audioBackBtn')?.addEventListener('click', e => { e.stopPropagation(); triggerExit(); });
+    document.getElementById('audioModeBtn')?.addEventListener('click', e => { e.stopPropagation(); send('toggleAudioMode'); });
+    document.getElementById('audioReturnToVideoBtn')?.addEventListener('click', e => { e.stopPropagation(); send('toggleAudioMode', false); });
+    document.getElementById('audioChaptersBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('chaptersPanel'); });
+    document.getElementById('audioEpisodesBtn')?.addEventListener('click', e => { e.stopPropagation(); togglePanel('episodesPanel'); });
+
+    document.getElementById('audioStation')?.addEventListener('click', (e) => {
+        if (isMenuOpen && !e.target.closest('.audio-station-dock, .audio-station-top-bar, .panel')) {
+            closeAllPanels();
+        }
+    });
+
+    // Tabs
+    const audioTabCover = document.getElementById('audioTabCover');
+    const audioTabLyrics = document.getElementById('audioTabLyrics');
+    const audioCoverView = document.getElementById('audioCoverView');
+    const audioLyricsView = document.getElementById('audioLyricsView');
+
+    audioTabCover?.addEventListener('click', e => {
+        e.stopPropagation();
+        audioTabCover.classList.add('active');
+        audioTabLyrics?.classList.remove('active');
+        if (audioCoverView) audioCoverView.style.display = 'flex';
+        if (audioLyricsView) audioLyricsView.style.display = 'none';
+    });
+
+    audioTabLyrics?.addEventListener('click', e => {
+        e.stopPropagation();
+        audioTabLyrics.classList.add('active');
+        audioTabCover?.classList.remove('active');
+        if (audioLyricsView) audioLyricsView.style.display = 'flex';
+        if (audioCoverView) audioCoverView.style.display = 'none';
+        const activeLine = document.querySelector('.lyric-line.active');
+        if (activeLine) activeLine.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    // Dedicated Shuffle & Repeat Listeners
+    let audioShuffleActive = false;
+    const audioShuffleBtn = document.getElementById('audioShuffleBtn');
+    audioShuffleBtn?.addEventListener('click', e => {
+        e.stopPropagation();
+        audioShuffleActive = !audioShuffleActive;
+        audioShuffleBtn.classList.toggle('active', audioShuffleActive);
+        audioShuffleBtn.title = audioShuffleActive ? 'Shuffle (On)' : 'Shuffle (Off)';
+        showHudToast(audioShuffleActive ? 'Shuffle: Enabled' : 'Shuffle: Disabled');
+    });
+
+    const audioRepeatBtn = document.getElementById('audioRepeatBtn');
+    const audioRepeatBadge = document.getElementById('audioRepeatBadge');
+    const updateAudioRepeatUI = () => {
+        if (!audioRepeatBtn) return;
+        audioRepeatBtn.classList.toggle('active', isLooping);
+        if (audioRepeatBadge) audioRepeatBadge.style.display = isLooping ? 'inline-block' : 'none';
+        audioRepeatBtn.title = isLooping ? 'Repeat Track (On)' : 'Repeat (Off)';
+    };
+    window.updateAudioRepeatUI = updateAudioRepeatUI;
+
+    audioRepeatBtn?.addEventListener('click', e => {
+        e.stopPropagation();
+        isLooping = !isLooping;
+        send('toggleLoop', isLooping);
+        showHudToast(isLooping ? 'Repeat: Track' : 'Repeat: Off');
+        updateAudioRepeatUI();
+        const loopBadge = document.getElementById('ctxLoopBadge');
+        if (loopBadge) {
+            loopBadge.innerText = isLooping ? 'On' : 'Off';
+            loopBadge.style.color = isLooping ? '#9D4EDD' : 'rgba(255, 255, 255, 0.6)';
+        }
+    });
+
+    // Dedicated Play/Pause
+    document.getElementById('audioStationPlayPauseBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        send('togglePlay');
+    });
+
+    // Dedicated Prev / Next
+    document.getElementById('audioStationPrevTrackBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        triggerPrevEpisode();
+    });
+    document.getElementById('audioStationNextTrackBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        triggerNextEpisode();
+    });
+
+    // Dedicated Seeks
+    document.getElementById('audioStationSeekBackBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const seekMs = window.seekDurationMs || 10000;
+        doRelativeSeek(-seekMs);
+    });
+    document.getElementById('audioStationSeekFwdBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const seekMs = window.seekDurationMs || 10000;
+        doRelativeSeek(seekMs);
+    });
+
+    // ── Acoustic Waveform Scrubber & Visualizer Engine ───────────────
+    let isAudioScrubbing = false;
+    let waveformBars = [];
+    let lastWaveformSeed = '';
+    let waveformAnimFrame = null;
+    let lastRenderedWaveformPct = 0;
+
+    const generateWaveformSeed = (seed) => {
+        const barCount = 76;
+        const bars = [];
+        let hash = 0;
+        for (let i = 0; i < seed.length; i++) {
+            hash = (hash << 5) - hash + seed.charCodeAt(i);
+            hash |= 0;
+        }
+        const rng = () => {
+            hash = (hash * 9301 + 49297) % 233280;
+            return hash / 233280;
+        };
+        for (let i = 0; i < barCount; i++) {
+            const envelope = Math.sin((i / (barCount - 1)) * Math.PI);
+            const noise = 0.35 + 0.65 * rng();
+            const val = Math.max(0.18, Math.min(1.0, envelope * 0.4 + noise * 0.6));
+            bars.push(val);
+        }
+        return bars;
+    };
+
+    const initWaveformProfile = () => {
+        const meta = window.lastMeta || {};
+        const title = meta.title || meta.name || '';
+        if (title !== lastWaveformSeed || waveformBars.length === 0) {
+            lastWaveformSeed = title;
+            waveformBars = generateWaveformSeed(title || 'stream');
+        }
+    };
+
+    const renderAudioWaveform = (playedRatio = 0) => {
+        const canvas = document.getElementById('audioWaveformCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        const dpr = window.devicePixelRatio || 1;
+        const rect = canvas.getBoundingClientRect();
+        const displayWidth = rect.width;
+        const displayHeight = rect.height || 24;
+
+        if (displayWidth <= 0) return;
+
+        const targetW = Math.floor(displayWidth * dpr);
+        const targetH = Math.floor(displayHeight * dpr);
+        if (canvas.width !== targetW || canvas.height !== targetH) {
+            canvas.width = targetW;
+            canvas.height = targetH;
+        }
+
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, displayWidth, displayHeight);
+
+        initWaveformProfile();
+        lastRenderedWaveformPct = playedRatio;
+
+        const totalBars = waveformBars.length;
+        const totalGap = (totalBars - 1) * 2;
+        const barWidth = Math.max(1.8, (displayWidth - totalGap) / totalBars);
+        const centerY = displayHeight / 2;
+        const now = performance.now() * 0.003;
+
+        for (let i = 0; i < totalBars; i++) {
+            const x = i * (barWidth + 2);
+            const baseVal = waveformBars[i];
+
+            let dynamicMod = 0;
+            if (globalIsPlaying) {
+                dynamicMod = Math.sin(now + i * 0.28) * 0.12 + Math.cos(now * 0.7 + i * 0.15) * 0.08;
+            }
+            const barHeightPct = Math.max(0.18, Math.min(1.0, baseVal + dynamicMod));
+            const barH = Math.max(3, barHeightPct * (displayHeight - 4));
+            const y = centerY - barH / 2;
+
+            const isPlayed = (x + barWidth / 2) / displayWidth <= playedRatio;
+            ctx.fillStyle = isPlayed ? '#ffffff' : 'rgba(255, 255, 255, 0.22)';
+
+            const radius = barWidth / 2;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+                ctx.roundRect(x, y, barWidth, barH, radius);
+            } else {
+                ctx.rect(x, y, barWidth, barH);
+            }
+            ctx.fill();
+        }
+
+        ctx.restore();
+    };
+    window.renderAudioWaveform = renderAudioWaveform;
+
+    const runWaveformLoop = () => {
+        if (document.body.classList.contains('audio-mode-active') && globalIsPlaying) {
+            renderAudioWaveform(lastRenderedWaveformPct);
+        }
+        waveformAnimFrame = requestAnimationFrame(runWaveformLoop);
+    };
+    if (!waveformAnimFrame) {
+        waveformAnimFrame = requestAnimationFrame(runWaveformLoop);
+    }
+
+    window.addEventListener('resize', () => {
+        if (document.body.classList.contains('audio-mode-active')) {
+            renderAudioWaveform(lastRenderedWaveformPct);
+        }
+    });
+
+    // Dedicated Audio Waveform Scrubber Interaction
+    const audioScrubBar = document.getElementById('audioScrubBar');
+    const audioScrubProgress = document.getElementById('audioScrubProgress');
+    const audioCurrentTime = document.getElementById('audioCurrentTime');
+
+    const updateAudioScrubPosition = (clientX) => {
+        if (durationMs <= 0 || !audioScrubBar) return 0;
+        const rect = audioScrubBar.getBoundingClientRect();
+        const clickX = Math.max(0, Math.min(rect.width, clientX - rect.left));
+        const pct = clickX / rect.width;
+        if (audioScrubProgress) {
+            audioScrubProgress.style.width = `${pct * 100}%`;
+        }
+        if (audioCurrentTime) {
+            audioCurrentTime.innerText = fmt(Math.round(pct * durationMs));
+        }
+        renderAudioWaveform(pct);
+        return pct;
+    };
+
+    if (audioScrubBar) {
+        audioScrubBar.addEventListener('pointerdown', e => {
+            if (durationMs <= 0) return;
+            e.stopPropagation();
+            isAudioScrubbing = true;
+            audioScrubBar.classList.add('scrubbing');
+            try { audioScrubBar.setPointerCapture(e.pointerId); } catch (_) {}
+            updateAudioScrubPosition(e.clientX);
+        });
+
+        audioScrubBar.addEventListener('pointermove', e => {
+            if (!isAudioScrubbing) return;
+            e.stopPropagation();
+            updateAudioScrubPosition(e.clientX);
+        });
+
+        const finishAudioScrub = (e) => {
+            if (!isAudioScrubbing) return;
+            isAudioScrubbing = false;
+            audioScrubBar.classList.remove('scrubbing');
+            try { audioScrubBar.releasePointerCapture(e.pointerId); } catch (_) {}
+            if (durationMs <= 0) return;
+            const pct = updateAudioScrubPosition(e.clientX);
+            const targetMs = Math.round(pct * durationMs);
+            currentPosMs = targetMs;
+            send('seekTo', targetMs);
+        };
+
+        audioScrubBar.addEventListener('pointerup', finishAudioScrub);
+        audioScrubBar.addEventListener('pointercancel', finishAudioScrub);
+    }
+
+    // Dedicated Audio Volume & Mute
+    document.getElementById('audioMuteBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        const nextMuted = !isMuted;
+        applyMuteVisuals(nextMuted);
+        send('toggleMute');
+    });
+
+    document.getElementById('audioVolumeSlider')?.addEventListener('input', e => {
+        e.stopPropagation();
+        const v = Math.max(0, Math.min(100, parseInt(e.target.value, 10) || 0));
+        currentVolume = v;
+        if (isMuted && v > 0) {
+            isMuted = false;
+            send('toggleMute');
+        }
+        updateMuteIcon();
+        updateVolumeTrack(v);
+        send('setVolume', v);
+    });
+
+    // Settings Controls - Playback Speed
+    const applySpeed = (val) => {
+        const clamped = Math.max(0.25, Math.min(4.0, Math.round(val * 100) / 100));
+        currentSpeed = clamped;
+        window.currentSpeed = clamped;
+        syncSpeedBadge(clamped);
+        send('setSpeed', clamped);
+    };
+    window.applySpeed = applySpeed;
+
+    const syncSpeedBadge = (val) => {
+        const clamped = Math.max(0.25, Math.min(4.0, Math.round(val * 100) / 100));
+        const heroValStr = clamped.toFixed(2) + "x";
+        const valStr = Number.isInteger(clamped) ? clamped.toFixed(0) : clamped.toString();
+        const isNormal = Math.abs(clamped - 1.0) < 0.01;
+
+        // 1. Hero text readout in the speed popover
+        const speedHero = document.getElementById('speedHeroDisplay');
+        if (speedHero) speedHero.innerText = heroValStr;
+
+        // 2. Control bar button and badge
+        const speedBtn = document.getElementById('speedBtn');
+        const speedBadge = document.getElementById('speedBadge');
+        if (speedBtn && speedBadge) {
+            if (isNormal) {
+                speedBadge.style.display = 'none';
+                speedBtn.classList.remove('speed-custom');
+                speedBtn.title = 'Playback Speed (Hotkey: [ / ])';
+            } else {
+                speedBadge.innerText = valStr + "×";
+                speedBadge.style.display = 'inline-flex';
+                speedBtn.classList.add('speed-custom');
+                speedBtn.title = `Playback Speed (${valStr}×)`;
+            }
+        }
+
+        const speedSliderVal = document.getElementById('speedSliderVal');
+        if (speedSliderVal) speedSliderVal.innerText = valStr + "×";
+
+        // 3. Preset pills active states (compact pills, popover footer, quality modal)
+        document.querySelectorAll('#speedChipsRow .speed-compact-pill, #speedChipsRow .chip, #speedChipsRow .cs-speed-chip, #speedChips .chip').forEach(el => {
+            const sp = parseFloat(el.dataset.speed);
+            if (!isNaN(sp) && Math.abs(clamped - sp) < 0.01) {
+                el.classList.add('active');
+            } else {
+                el.classList.remove('active');
+            }
+        });
+
+        // 4. Slider sync with track gradient fill
+        const speedSlider = document.getElementById('speedSlider');
+        if (speedSlider) {
+            speedSlider.value = clamped;
+            const min = parseFloat(speedSlider.min) || 0.25;
+            const max = parseFloat(speedSlider.max) || 4.0;
+            const pct = Math.max(0, Math.min(100, ((clamped - min) / (max - min)) * 100));
+            speedSlider.style.setProperty('--slider-pct', `${pct}%`);
+        }
+    };
+    window.syncSpeedBadge = syncSpeedBadge;
+
+    document.getElementById('speedSlider')?.addEventListener('input', e => {
+        e.stopPropagation();
+        applySpeed(parseFloat(e.target.value));
+    });
+    document.querySelectorAll('#speedChipsRow .speed-compact-pill, #speedChipsRow .chip, #speedChipsRow .cs-speed-chip').forEach(chip => {
+        chip.addEventListener('click', e => {
+            e.stopPropagation();
+            const sp = parseFloat(chip.dataset.speed);
+            if (!isNaN(sp)) applySpeed(sp);
+        });
+    });
+    document.getElementById('speedDecBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        applySpeed(currentSpeed - 0.05);
+    });
+    document.getElementById('speedIncBtn')?.addEventListener('click', e => {
+        e.stopPropagation();
+        applySpeed(currentSpeed + 0.05);
+    });
+    document.getElementById('speedHeroDisplay')?.addEventListener('click', e => {
+        e.stopPropagation();
+        applySpeed(1.0);
+    });
+    document.getElementById('btnResetSpeed')?.addEventListener('click', e => {
+        e.stopPropagation();
+        applySpeed(1.0);
+    });
+    // Sync
+    const updateSyncUI = () => {
+        document.getElementById('valSubDelay').innerText = `${subDelaySec > 0 ? '+' : ''}${Math.round(subDelaySec * 1000)}ms`;
+        document.getElementById('valAudioDelay').innerText = `${audioDelaySec > 0 ? '+' : ''}${Math.round(audioDelaySec * 1000)}ms`;
+    };
+    document.getElementById('btnSubDelayInc').addEventListener('click', e => { e.stopPropagation(); subDelaySec += 0.1; send('setMpvProperty', `sub-delay:${subDelaySec.toFixed(1)}`); updateSyncUI(); });
+    document.getElementById('btnSubDelayDec').addEventListener('click', e => { e.stopPropagation(); subDelaySec -= 0.1; send('setMpvProperty', `sub-delay:${subDelaySec.toFixed(1)}`); updateSyncUI(); });
+    // Subtitle styling is rendered directly onto the video canvas via MPV properties.
+    window.updateSubtitlePreview = () => {};
+
+
+    // Color Palettes
+    const bindPalette = (containerId, onSelect) => {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        const dots = container.querySelectorAll('.desktop-color-dot');
+        dots.forEach(d => {
+            d.addEventListener('click', e => {
+                e.stopPropagation();
+                dots.forEach(x => x.classList.remove('active'));
+                d.classList.add('active');
+                onSelect(d.dataset.color);
+                window.updateSubtitlePreview();
+            });
+        });
+    };
+
+    bindPalette('subTextColorPalette', color => send('setMpvProperty', `sub-color:${color}`));
+    bindPalette('subBorderColorPalette', color => send('setSubtitleBorderColor', color));
+    bindPalette('subShadowColorPalette', color => send('setSubtitleShadowColor', color));
+
+    // Subtitle Sliders
+    const subSizeSlider = document.getElementById('subSizeSlider');
+    const subSizeVal = document.getElementById('subSizeVal');
+    if (subSizeSlider && subSizeVal) {
+        subSizeSlider.addEventListener('input', e => {
+            e.stopPropagation();
+            subSizeVal.innerText = `${e.target.value}px`;
+            send('setMpvProperty', `sub-font-size:${e.target.value}`);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const subBorderSizeSlider = document.getElementById('subBorderSizeSlider');
+    const subBorderSizeVal = document.getElementById('subBorderSizeVal');
+    if (subBorderSizeSlider && subBorderSizeVal) {
+        subBorderSizeSlider.addEventListener('input', e => {
+            e.stopPropagation();
+            subBorderSizeVal.innerText = `${e.target.value}px`;
+            send('setSubtitleBorderSize', e.target.value);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const subShadowOffsetSlider = document.getElementById('subShadowOffsetSlider');
+    const subShadowOffsetVal = document.getElementById('subShadowOffsetVal');
+    if (subShadowOffsetSlider && subShadowOffsetVal) {
+        subShadowOffsetSlider.addEventListener('input', e => {
+            e.stopPropagation();
+            subShadowOffsetVal.innerText = `${e.target.value}px`;
+            send('setSubtitleShadowOffset', e.target.value);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const subBlurSlider = document.getElementById('subBlurSlider');
+    const subBlurVal = document.getElementById('subBlurVal');
+    if (subBlurSlider && subBlurVal) {
+        subBlurSlider.addEventListener('input', e => {
+            e.stopPropagation();
+            subBlurVal.innerText = `${e.target.value}px`;
+            send('setSubtitleBlur', e.target.value);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const subPosSlider = document.getElementById('subPosSlider');
+    const subPosVal = document.getElementById('subPosVal');
+    if (subPosSlider && subPosVal) {
+        subPosSlider.addEventListener('input', e => {
+            e.stopPropagation();
+            subPosVal.innerText = `${e.target.value}%`;
+            send('setMpvProperty', `sub-pos:${e.target.value}`);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    // Bold & Italic Pill Buttons
+    const btnSubBold = document.getElementById('btnSubBold');
+    if (btnSubBold) {
+        btnSubBold.addEventListener('click', e => {
+            e.stopPropagation();
+            const isActive = btnSubBold.classList.toggle('active');
+            send('setSubtitleBold', isActive ? 'yes' : 'no');
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const btnSubItalic = document.getElementById('btnSubItalic');
+    if (btnSubItalic) {
+        btnSubItalic.addEventListener('click', e => {
+            e.stopPropagation();
+            const isActive = btnSubItalic.classList.toggle('active');
+            send('setSubtitleItalic', isActive ? 'yes' : 'no');
+            window.updateSubtitlePreview();
+        });
+    }
+
+    // Mouse-wheel fine-tuning & live reactive progress fill for all desktop sliders
+    const updateDesktopSliderFill = (slider) => {
+        const min = parseFloat(slider.min) || 0;
+        const max = parseFloat(slider.max) || 100;
+        const current = parseFloat(slider.value) || 0;
+        const pct = Math.max(0, Math.min(100, ((current - min) / (max - min)) * 100));
+        slider.style.setProperty('--slider-pct', `${pct}%`);
+    };
+
+    document.querySelectorAll('.desktop-slider').forEach(slider => {
+        updateDesktopSliderFill(slider);
+        slider.addEventListener('input', () => updateDesktopSliderFill(slider));
+        slider.addEventListener('wheel', e => {
+            e.preventDefault();
+            const step = parseFloat(slider.step) || 1;
+            const min = parseFloat(slider.min);
+            const max = parseFloat(slider.max);
+            let current = parseFloat(slider.value);
+            if (e.deltaY < 0) {
+                current = Math.min(max, current + step);
+            } else {
+                current = Math.max(min, current - step);
+            }
+            slider.value = current;
+            updateDesktopSliderFill(slider);
+            slider.dispatchEvent(new Event('input'));
+        });
+    });
+
+    // Subtitle Processing & Overrides Toggles
+    const btnToggleSubOverride = document.getElementById('btnToggleSubOverride');
+    if (btnToggleSubOverride) {
+        btnToggleSubOverride.addEventListener('click', e => {
+            e.stopPropagation();
+            subOverrideVisible = !subOverrideVisible;
+            btnToggleSubOverride.classList.toggle('active', subOverrideVisible);
+            send('setSubtitleOverrideEnabled', subOverrideVisible);
+            window.updateSubtitlePreview();
+        });
+    }
+
+    const btnToggleSubCaptions = document.getElementById('btnToggleSubCaptions');
+    if (btnToggleSubCaptions) {
+        btnToggleSubCaptions.addEventListener('click', e => {
+            e.stopPropagation();
+            subCaptionsFilterOn = !subCaptionsFilterOn;
+            btnToggleSubCaptions.classList.toggle('active', subCaptionsFilterOn);
+            send('setSubFilterCaptions', subCaptionsFilterOn);
+        });
+    }
+
+    const btnToggleSubBloat = document.getElementById('btnToggleSubBloat');
+    if (btnToggleSubBloat) {
+        btnToggleSubBloat.addEventListener('click', e => {
+            e.stopPropagation();
+            subBloatFilterOn = !subBloatFilterOn;
+            btnToggleSubBloat.classList.toggle('active', subBloatFilterOn);
+            send('setSubFilterBloat', subBloatFilterOn);
+        });
+    }
+
+    const btnToggleSubUppercase = document.getElementById('btnToggleSubUppercase');
+    if (btnToggleSubUppercase) {
+        btnToggleSubUppercase.addEventListener('click', e => {
+            e.stopPropagation();
+            subUppercaseOn = !subUppercaseOn;
+            btnToggleSubUppercase.classList.toggle('active', subUppercaseOn);
+            send('setSubUppercase', subUppercaseOn);
+        });
+    }
+
+    // Reset Subtitles
+    const btnResetSubtitles = document.getElementById('btnResetSubtitles');
+    if (btnResetSubtitles) {
+        btnResetSubtitles.addEventListener('click', e => {
+            e.stopPropagation();
+            send('resetSubtitleSettings');
+            
+            if (subSizeSlider && subSizeVal) {
+                subSizeSlider.value = 45;
+                subSizeVal.innerText = '45px';
+                updateDesktopSliderFill(subSizeSlider);
+            }
+            const subBgInput = document.getElementById('subBgInput');
+            if (subBgInput) subBgInput.value = '#00000000';
+            if (subBorderSizeSlider && subBorderSizeVal) {
+                subBorderSizeSlider.value = 3;
+                subBorderSizeVal.innerText = '3px';
+                updateDesktopSliderFill(subBorderSizeSlider);
+            }
+            if (subShadowOffsetSlider && subShadowOffsetVal) {
+                subShadowOffsetSlider.value = 0;
+                subShadowOffsetVal.innerText = '0px';
+                updateDesktopSliderFill(subShadowOffsetSlider);
+            }
+            if (subBlurSlider && subBlurVal) {
+                subBlurSlider.value = 0;
+                subBlurVal.innerText = '0px';
+                updateDesktopSliderFill(subBlurSlider);
+            }
+            if (subPosSlider && subPosVal) {
+                subPosSlider.value = 100;
+                subPosVal.innerText = '100%';
+                updateDesktopSliderFill(subPosSlider);
+            }
+            
+            document.querySelectorAll('#subTextColorPalette .desktop-color-dot').forEach(d => d.classList.remove('active'));
+            document.querySelector('#subTextColorPalette .desktop-color-dot[data-color="#FFFFFF"]')?.classList.add('active');
+
+            document.querySelectorAll('#subBorderColorPalette .desktop-color-dot').forEach(d => d.classList.remove('active'));
+            document.querySelector('#subBorderColorPalette .desktop-color-dot[data-color="#000000"]')?.classList.add('active');
+            
+            document.querySelectorAll('#subShadowColorPalette .desktop-color-dot').forEach(d => d.classList.remove('active'));
+            document.querySelector('#subShadowColorPalette .desktop-color-dot[data-color="#000000"]')?.classList.add('active');
+
+            if (btnSubBold) btnSubBold.classList.remove('active');
+            if (btnSubItalic) btnSubItalic.classList.remove('active');
+            
+            const fontInput = document.getElementById('subFontInput');
+            if (fontInput) fontInput.value = '';
+
+            subOverrideVisible = true;
+            if (btnToggleSubOverride) btnToggleSubOverride.classList.add('active');
+
+            subCaptionsFilterOn = false;
+            if (btnToggleSubCaptions) btnToggleSubCaptions.classList.remove('active');
+
+            subBloatFilterOn = true;
+            if (btnToggleSubBloat) btnToggleSubBloat.classList.add('active');
+
+            subUppercaseOn = false;
+            if (btnToggleSubUppercase) btnToggleSubUppercase.classList.remove('active');
+
+            window.updateSubtitlePreview();
+        });
+    }
+
+    // Video Aspect & Zoom
+    document.querySelectorAll('#aspectChips .chip').forEach(c => {
+        c.addEventListener('click', e => {
+            e.stopPropagation();
+            document.querySelectorAll('#aspectChips .chip').forEach(x => x.classList.remove('active'));
+            c.classList.add('active');
+            const aspect = c.dataset.aspect;
+            if (aspect === 'original') {
+                send('setMpvProperty', 'keepaspect:yes');
+                send('setMpvProperty', 'video-aspect-override:no');
+            } else if (aspect === '16:9') {
+                send('setMpvProperty', 'keepaspect:yes');
+                send('setMpvProperty', 'video-aspect-override:16:9');
+            } else if (aspect === '4:3') {
+                send('setMpvProperty', 'keepaspect:yes');
+                send('setMpvProperty', 'video-aspect-override:4:3');
+            } else if (aspect === 'stretch') {
+                send('setMpvProperty', 'keepaspect:no');
+                send('setMpvProperty', 'video-aspect-override:no');
+            }
+        });
+    });
+    document.getElementById('zoomSlider').addEventListener('input', e => {
+        e.stopPropagation();
+        document.getElementById('zoomVal').innerText = e.target.value;
+        send('setMpvProperty', `video-zoom:${e.target.value}`);
+    });
+
+    document.getElementById('btnResetVideo').addEventListener('click', e => {
+        e.stopPropagation();
+        // Reset Aspect
+        document.querySelectorAll('#aspectChips .chip').forEach(c => c.classList.remove('active'));
+        document.querySelector('#aspectChips .chip[data-aspect="original"]').classList.add('active');
+        send('setMpvProperty', 'keepaspect:yes');
+        send('setMpvProperty', 'video-aspect-override:no');
+        
+        // Reset Zoom
+        document.getElementById('zoomSlider').value = 0;
+        document.getElementById('zoomSlider').dispatchEvent(new Event('input'));
+        document.getElementById('zoomVal').innerText = '0';
+        send('setMpvProperty', 'video-zoom:0');
+        
+        // Reset Scale
+        document.querySelectorAll('#scaleChips .chip').forEach(c => c.classList.remove('active'));
+        document.querySelector('#scaleChips .chip[data-scale="spline36"]').classList.add('active');
+        send('setMpvProperty', 'scale:spline36');
+    });
+
+    // Scale filter
+    document.querySelectorAll('#scaleChips .chip').forEach(c => {
+        c.addEventListener('click', e => {
+            e.stopPropagation();
+            document.querySelectorAll('#scaleChips .chip').forEach(x => x.classList.remove('active'));
+            c.classList.add('active');
+            send('setMpvProperty', `scale:${c.dataset.scale}`);
+        });
+    });
+
+    // Stats for Nerds toggle
+    let statsVisible = false;
+    const statsOverlay = document.getElementById('statsOverlay');
+    const toggleStatsForNerds = (forcedState) => {
+        if (typeof forcedState === 'boolean') {
+            statsVisible = forcedState;
+        } else {
+            statsVisible = !statsVisible;
+        }
+        const btn = document.getElementById('btnToggleStats');
+        if (statsVisible) {
+            if (btn) btn.classList.add('active');
+            if (statsOverlay) statsOverlay.classList.add('show');
+        } else {
+            if (btn) btn.classList.remove('active');
+            if (statsOverlay) statsOverlay.classList.remove('show');
+        }
+        send('toggleStats');
+    };
+    window.toggleStatsForNerds = toggleStatsForNerds;
+    window.toggleStats = toggleStatsForNerds;
+
+    document.getElementById('btnToggleStats')?.addEventListener('click', e => {
+        e.stopPropagation();
+        toggleStatsForNerds();
+    });
+
+    // Interpolation toggle
+    let interpolationEnabled = false;
+    const btnToggleInterpolation = document.getElementById('btnToggleInterpolation');
+    if (btnToggleInterpolation) {
+        btnToggleInterpolation.addEventListener('click', e => {
+            e.stopPropagation();
+            interpolationEnabled = !interpolationEnabled;
+            if (interpolationEnabled) {
+                btnToggleInterpolation.classList.add('active');
+            } else {
+                btnToggleInterpolation.classList.remove('active');
+            }
+            send('toggleInterpolation', interpolationEnabled.toString());
+        });
+    }
+
+    // Tabs Navigation (scoped to parent panel)
+    function setupTabs(panelId) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const btns = panel.querySelectorAll('[data-tab-target]');
+        btns.forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                btns.forEach(b => b.classList.remove('active'));
+                panel.querySelectorAll('.settings-tab-content').forEach(c => c.classList.remove('active'));
+                btn.classList.add('active');
+                const targetId = btn.getAttribute('data-tab-target');
+                const content = panel.querySelector('#' + targetId);
+                if (content) content.classList.add('active');
+            });
+        });
+    }
+    setupTabs('subsPanel');
+    setupTabs('settingsPanel');
+
+    // ── Floating HUD Toast ──────────────────────────────────────────
+    window.showHudToast = (text) => {
+        if (!text) return;
+        if (typeof window.showToast === 'function') {
+            window.showToast(text);
+        }
+    };
+
+    // ── Context Menu Logic ──────────────────────────────────────────
+    let isLooping = false;
+    let ctxActiveSubmenu = null;
+    let ctxSubmenuCloseTimer = null;
+
+    function closeAllSubmenus() {
+        if (ctxSubmenuCloseTimer) {
+            clearTimeout(ctxSubmenuCloseTimer);
+            ctxSubmenuCloseTimer = null;
+        }
+        document.querySelectorAll('.ctx-submenu').forEach(sub => {
+            sub.classList.remove('open');
+            sub.style.display = 'none';
+        });
+        ctxActiveSubmenu = null;
+    }
+
+    function populateContextSubmenus() {
+        const meta = window.lastMeta || {};
+        try {
+
+        // 1. Audio Submenu
+        const audioSub = document.getElementById('ctxSubmenuAudio');
+        if (audioSub) {
+            let html = '<div class="ctx-sub-header">Audio Streams</div>';
+            const rendered = new Set();
+
+            if (meta.audioTracks && meta.audioTracks.length > 0) {
+                for (const t of meta.audioTracks) {
+                    const name = t.name || ('Track ' + t.id);
+                    rendered.add(name.toLowerCase().trim());
+                    const norm = normalizeAudioName(name);
+                    if (norm) rendered.add(norm);
+
+                    html += `
+                        <div class="ctx-sub-item ${t.isSelected ? 'active' : ''}" onclick="send('setAudioTrack','${t.id}');closeContextMenu();">
+                            <span>${name}</span>
+                            <span class="ctx-sub-check">${t.isSelected ? SVGS.check : ''}</span>
+                        </div>`;
+                }
+            }
+
+            if (meta.lazyAudioTracks && meta.lazyAudioTracks.length > 0) {
+                for (const t of meta.lazyAudioTracks) {
+                    const name = t.name;
+                    const norm = normalizeAudioName(name);
+                    const isAttached = (meta.activeLazyAudioTrackUrl && meta.activeLazyAudioTrackUrl === t.url);
+                    const isRendered = rendered.has(name.toLowerCase().trim()) || (norm && rendered.has(norm));
+
+                    if (!isAttached && !isRendered) {
+                        html += `
+                            <div class="ctx-sub-item" onclick="send('loadLazyAudioTrack','${t.url}');closeContextMenu();">
+                                <span>${name}</span>
+                                <span class="ctx-sub-check"></span>
+                            </div>`;
+                    }
+                }
+            }
+
+            html += `
+                <div class="ctx-divider"></div>
+                <div class="ctx-sub-header">Audio Timing</div>
+                <div class="ctx-sub-item" onclick="send('setAudioDelay', -0.1);showHudToast('Audio Delay: -100ms');closeContextMenu();">
+                    <span>-100 ms</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setAudioDelay', -0.05);showHudToast('Audio Delay: -50ms');closeContextMenu();">
+                    <span>-50 ms</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setAudioDelay', 0.0);showHudToast('Audio Delay: Reset');closeContextMenu();">
+                    <span>Reset (0s)</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setAudioDelay', 0.05);showHudToast('Audio Delay: +50ms');closeContextMenu();">
+                    <span>+50 ms</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setAudioDelay', 0.1);showHudToast('Audio Delay: +100ms');closeContextMenu();">
+                    <span>+100 ms</span><span class="ctx-sub-check"></span>
+                </div>
+            `;
+
+            audioSub.innerHTML = html;
+        }
+
+        // 2. Subtitles Submenu
+        const subsSub = document.getElementById('ctxSubmenuSubs');
+        if (subsSub) {
+            let html = '<div class="ctx-sub-header">Subtitles</div>';
+            const hasActiveSub = meta.subTracks && meta.subTracks.some(t => t.isSelected);
+            const isOff = !hasActiveSub;
+
+            html += `
+                <div class="ctx-sub-item ${isOff ? 'active' : ''}" onclick="send('setSubtitleTrack','');closeContextMenu();">
+                    <span>Off</span>
+                    <span class="ctx-sub-check">${isOff ? SVGS.check : ''}</span>
+                </div>`;
+
+            if (meta.subTracks && meta.subTracks.length > 0) {
+                for (const t of meta.subTracks) {
+                    const name = t.name || ('Track ' + t.id);
+                    html += `
+                        <div class="ctx-sub-item ${t.isSelected ? 'active' : ''}" onclick="send('setSubtitleTrack','${t.id}');closeContextMenu();">
+                            <span>${name}</span>
+                            <span class="ctx-sub-check">${t.isSelected ? SVGS.check : ''}</span>
+                        </div>`;
+                }
+            }
+
+            if (meta.lazySubTracks && meta.lazySubTracks.length > 0) {
+                const renderedSubNames = new Set(meta.subTracks ? meta.subTracks.map(t => (t.name || '').toLowerCase().trim()) : []);
+                for (const t of meta.lazySubTracks) {
+                    const name = t.name;
+                    if (!renderedSubNames.has(name.toLowerCase().trim())) {
+                        html += `
+                            <div class="ctx-sub-item" onclick="send('loadLazySubtitleTrack','${t.url}');closeContextMenu();">
+                                <span>${name}</span>
+                                <span class="ctx-sub-check"></span>
+                            </div>`;
+                    }
+                }
+            }
+
+            html += `
+                <div class="ctx-divider"></div>
+                <div class="ctx-sub-header">Subtitle Timing</div>
+                <div class="ctx-sub-item" onclick="send('setSubDelay', -0.1);showHudToast('Sub Delay: -100ms');closeContextMenu();">
+                    <span>-100 ms</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setSubDelay', 0.0);showHudToast('Sub Delay: Reset');closeContextMenu();">
+                    <span>Reset (0s)</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setSubDelay', 0.1);showHudToast('Sub Delay: +100ms');closeContextMenu();">
+                    <span>+100 ms</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-divider"></div>
+                <div class="ctx-sub-item" onclick="closeContextMenu();openSubSearchModal();">
+                    <span style="color: #64B5F6;">Search Online Subtitles...</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="closeContextMenu();send('openLocalSubtitlePicker','');">
+                    <span style="color: #64B5F6;">Load Local Subtitle...</span><span class="ctx-sub-check"></span>
+                </div>
+            `;
+
+            subsSub.innerHTML = html;
+        }
+
+        // 3. Quality & Video Submenu
+        const qualSub = document.getElementById('ctxSubmenuQuality');
+        if (qualSub) {
+            let html = '<div class="ctx-sub-header">Stream Quality</div>';
+            let activeRes = meta.resolution ? meta.resolution.split('x')[1] + 'p' : 'Auto';
+
+            if (meta.lazyVideoTracks && meta.lazyVideoTracks.length > 0) {
+                const anyMatched = meta.lazyVideoTracks.some(t => isTrackMatchingResolution(t.name, t.url, meta));
+                meta.lazyVideoTracks.forEach((t, index) => {
+                    const isActive = anyMatched ? isTrackMatchingResolution(t.name, t.url, meta) : (index === 0);
+                    html += `
+                        <div class="ctx-sub-item ${isActive ? 'active' : ''}" onclick="send('loadLazyVideoTrack','${t.url}');closeContextMenu();">
+                            <span>${t.name}</span>
+                            <span class="ctx-sub-check">${isActive ? SVGS.check : ''}</span>
+                        </div>`;
+                });
+            } else if (meta.videoTracks && meta.videoTracks.length > 0) {
+                const validVideoTracks = meta.videoTracks.filter(t => !/\.(png|jpe?g|webp|bmp|gif)$/i.test(t.name || ''));
+                if (validVideoTracks.length > 0) {
+                    for (const t of validVideoTracks) {
+                        const name = t.name || ('Track ' + t.id);
+                        html += `
+                            <div class="ctx-sub-item ${t.isSelected ? 'active' : ''}" onclick="send('setVideoTrack','${t.id}');closeContextMenu();">
+                                <span>${name}</span>
+                                <span class="ctx-sub-check">${t.isSelected ? SVGS.check : ''}</span>
+                            </div>`;
+                    }
+                } else {
+                    html += `<div class="ctx-sub-item active"><span>Default (${activeRes})</span><span class="ctx-sub-check">${SVGS.check}</span></div>`;
+                }
+            } else {
+                html += `<div class="ctx-sub-item active"><span>Default (${activeRes})</span><span class="ctx-sub-check">${SVGS.check}</span></div>`;
+            }
+
+            html += `
+                <div class="ctx-divider"></div>
+                <div class="ctx-sub-header">Aspect Ratio</div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','keepaspect:yes');send('setMpvProperty','video-aspect-override:no');showHudToast('Aspect: Original');closeContextMenu();">
+                    <span>Original (Auto)</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','keepaspect:yes');send('setMpvProperty','video-aspect-override:16:9');showHudToast('Aspect: 16:9');closeContextMenu();">
+                    <span>16:9 Widescreen</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','keepaspect:yes');send('setMpvProperty','video-aspect-override:4:3');showHudToast('Aspect: 4:3');closeContextMenu();">
+                    <span>4:3 Standard</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','keepaspect:no');send('setMpvProperty','video-aspect-override:no');showHudToast('Aspect: Fill Window');closeContextMenu();">
+                    <span>Stretch to Fill</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-divider"></div>
+                <div class="ctx-sub-header">Video Zoom</div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','video-zoom:0');showHudToast('Zoom: 100% (Fit)');closeContextMenu();">
+                    <span>Fit (100%)</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','video-zoom:0.25');showHudToast('Zoom: +25%');closeContextMenu();">
+                    <span>Zoom In (+25%)</span><span class="ctx-sub-check"></span>
+                </div>
+                <div class="ctx-sub-item" onclick="send('setMpvProperty','video-zoom:0.5');showHudToast('Zoom: +50%');closeContextMenu();">
+                    <span>Zoom In (+50%)</span><span class="ctx-sub-check"></span>
+                </div>
+            `;
+
+            if (meta.shaders && meta.shaders.length > 0) {
+                html += `<div class="ctx-divider"></div><div class="ctx-sub-header">Video Shaders</div>`;
+                const noShaderActive = !meta.activeShader || meta.activeShader === 'None';
+                html += `
+                    <div class="ctx-sub-item ${noShaderActive ? 'active' : ''}" onclick="send('selectShader','None');closeContextMenu();">
+                        <span>None (Native)</span><span class="ctx-sub-check">${noShaderActive ? SVGS.check : ''}</span>
+                    </div>`;
+                for (const s of meta.shaders) {
+                    const isAct = (s === meta.activeShader);
+                    html += `
+                        <div class="ctx-sub-item ${isAct ? 'active' : ''}" onclick="send('selectShader','${s}');closeContextMenu();">
+                            <span>${s}</span><span class="ctx-sub-check">${isAct ? SVGS.check : ''}</span>
+                        </div>`;
+                }
+            }
+
+            qualSub.innerHTML = html;
+        }
+
+        // 4. Chapters Submenu
+        const chapItem = document.getElementById('ctxItemChapters');
+        const chapSub = document.getElementById('ctxSubmenuChapters');
+        if (chapItem && chapSub) {
+            if (meta.chapters && meta.chapters.length > 0) {
+                chapItem.style.display = 'flex';
+                let html = '<div class="ctx-sub-header">Chapters</div>';
+                meta.chapters.forEach((ch, idx) => {
+                    const isAct = (idx === meta.currentChapterIndex);
+                    const time = fmt(ch.timeMs);
+                    html += `
+                        <div class="ctx-sub-item ${isAct ? 'active' : ''}" onclick="send('seekToChapter',${ch.index});closeContextMenu();">
+                            <span>${ch.title} <span style="opacity: 0.5; font-size: 11px;">(${time})</span></span>
+                            <span class="ctx-sub-check">${isAct ? SVGS.check : ''}</span>
+                        </div>`;
+                });
+                chapSub.innerHTML = html;
+            } else {
+                chapItem.style.display = 'none';
+            }
+        }
+
+        // 5. Playback Speed Submenu
+        const speedSub = document.getElementById('ctxSubmenuSpeed');
+        if (speedSub) {
+            let html = '<div class="ctx-sub-header">Playback Speed</div>';
+            const speeds = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+            speeds.forEach(sp => {
+                const isAct = Math.abs(currentSpeed - sp) < 0.05;
+                html += `
+                    <div class="ctx-sub-item ${isAct ? 'active' : ''}" onclick="currentSpeed=${sp};window.currentSpeed=${sp};window.syncSpeedBadge?.(${sp});send('setSpeed',${sp});showHudToast('Speed: ${sp}x');closeContextMenu();">
+                        <span>${sp === 1.0 ? '1.0x (Normal)' : sp + 'x'}</span>
+                        <span class="ctx-sub-check">${isAct ? SVGS.check : ''}</span>
+                    </div>`;
+            });
+            speedSub.innerHTML = html;
+        }
+        } catch (err) {
+            console.error('[ContextMenu] populateContextSubmenus error:', err);
+        }
+    }
+
+    function setupContextSubmenus() {
+        document.querySelectorAll('.ctx-parent').forEach(item => {
+            if (item._ctxBound) return;
+            item._ctxBound = true;
+
+            item.addEventListener('mouseenter', () => {
+                if (ctxSubmenuCloseTimer) {
+                    clearTimeout(ctxSubmenuCloseTimer);
+                    ctxSubmenuCloseTimer = null;
+                }
+
+                const sub = item.querySelector('.ctx-submenu');
+                if (!sub) return;
+
+                document.querySelectorAll('.ctx-submenu').forEach(s => {
+                    if (s !== sub) {
+                        s.classList.remove('open');
+                        s.style.display = 'none';
+                    }
+                });
+
+                sub.style.display = 'block';
+                sub.classList.add('open');
+                ctxActiveSubmenu = sub;
+
+                // Viewport boundary and quadrant collision
+                const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1;
+                const itemRect = item.getBoundingClientRect();
+                const winW = window.innerWidth / zoom;
+                const winH = window.innerHeight / zoom;
+
+                const subW = sub.offsetWidth || 230;
+                const subH = sub.offsetHeight || 250;
+
+                // Horizontal inversion: flip left if near right viewport edge
+                if ((itemRect.right / zoom) + subW > winW - 12) {
+                    sub.style.left = 'auto';
+                    sub.style.right = '100%';
+                    sub.style.marginRight = '6px';
+                    sub.style.marginLeft = '0px';
+                } else {
+                    sub.style.left = '100%';
+                    sub.style.right = 'auto';
+                    sub.style.marginLeft = '6px';
+                    sub.style.marginRight = '0px';
+                }
+
+                // Vertical clamping: if overflowing bottom, shift upward
+                const scaledTop = itemRect.top / zoom;
+                if (scaledTop + subH > winH - 12) {
+                    const overflow = (scaledTop + subH) - (winH - 12);
+                    const clampedTop = Math.max(-(scaledTop - 12), -overflow);
+                    sub.style.top = `${clampedTop}px`;
+                } else {
+                    sub.style.top = '0px';
+                }
+            });
+
+            item.addEventListener('mouseleave', () => {
+                const sub = item.querySelector('.ctx-submenu');
+                if (!sub) return;
+                ctxSubmenuCloseTimer = setTimeout(() => {
+                    sub.classList.remove('open');
+                    sub.style.display = 'none';
+                    if (ctxActiveSubmenu === sub) ctxActiveSubmenu = null;
+                }, 120);
+            });
+        });
+    }
+
+    window.showContextMenu = (x, y) => {
+        if (!ctxMenu) return;
+        closeAllPanels();
+        closeAllSubmenus();
+
+        try {
+            populateContextSubmenus();
+            setupContextSubmenus();
+        } catch (err) {
+            console.error('[ContextMenu] Preparation error:', err);
+        }
+
+        const loopBadge = document.getElementById('ctxLoopBadge');
+        if (loopBadge) {
+            loopBadge.innerText = isLooping ? 'On' : 'Off';
+            loopBadge.style.color = isLooping ? '#9D4EDD' : 'rgba(255, 255, 255, 0.6)';
+        }
+
+        updatePauseInfoBadge();
+
+        ctxMenu.style.display = 'block';
+        
+        const zoom = parseFloat(getComputedStyle(document.body).zoom) || 1;
+        const scaledX = x / zoom;
+        const scaledY = y / zoom;
+        const winW = window.innerWidth / zoom;
+        const winH = window.innerHeight / zoom;
+        
+        const w = ctxMenu.offsetWidth || 230;
+        const h = ctxMenu.offsetHeight || 340;
+
+        const posX = (scaledX + w > winW - 12) ? Math.max(12, scaledX - w) : scaledX;
+        const posY = (scaledY + h > winH - 12) ? Math.max(12, scaledY - h) : scaledY;
+
+        ctxMenu.style.left = `${posX}px`;
+        ctxMenu.style.top = `${posY}px`;
+    };
+
+    window.closeContextMenu = () => {
+        if (ctxMenu) ctxMenu.style.display = 'none';
+        closeAllSubmenus();
+    };
+
+    window.toggleLoopFromContext = () => {
+        closeContextMenu();
+        isLooping = !isLooping;
+        send('toggleLoop', isLooping);
+        showHudToast(isLooping ? 'Loop: Enabled' : 'Loop: Disabled');
+        if (typeof window.updateAudioRepeatUI === 'function') {
+            window.updateAudioRepeatUI();
+        }
+    };
+
+    window.openPauseInfoModal = () => {
+        closeContextMenu();
+        const modal = document.getElementById('pauseInfoModalOverlay');
+        if (!modal) return;
+        // Update selected class on options
+        document.querySelectorAll('.pause-modal-option[data-mode]').forEach(el => {
+            if (el.getAttribute('data-mode') === pauseInfoMode) {
+                el.classList.add('selected');
+            } else {
+                el.classList.remove('selected');
+            }
+        });
+        const castOpt = document.getElementById('pauseModalOptionCast');
+        if (castOpt) {
+            if (showPauseCast) castOpt.classList.add('checked');
+            else castOpt.classList.remove('checked');
+        }
+        modal.style.display = 'flex';
+    };
+
+    window.closePauseInfoModal = (e) => {
+        if (e && e.target !== e.currentTarget && !e.target.classList.contains('shortcuts-close-btn')) return;
+        const modal = document.getElementById('pauseInfoModalOverlay');
+        if (modal) modal.style.display = 'none';
+    };
+
+    window.togglePauseShowCast = (e) => {
+        if (e) e.stopPropagation();
+        showPauseCast = !showPauseCast;
+        send('set_pause_show_cast', showPauseCast);
+        const castOpt = document.getElementById('pauseModalOptionCast');
+        if (castOpt) {
+            if (showPauseCast) castOpt.classList.add('checked');
+            else castOpt.classList.remove('checked');
+        }
+        showHudToast(showPauseCast ? 'Starring Cast: Enabled' : 'Starring Cast: Disabled');
+        const pauseCast = document.getElementById('pauseInfoCast');
+        if (showPauseCast && currentCastList && currentCastList.length > 0 && !globalIsPlaying && pauseInfoMode !== 'off') {
+            if (pauseCast) pauseCast.classList.add('visible');
+        } else {
+            if (pauseCast) pauseCast.classList.remove('visible');
+        }
+    };
+
+    window.selectPauseInfoMode = (mode) => {
+        pauseInfoMode = mode;
+        updatePauseInfoBadge();
+        send('set_pause_info_mode', mode);
+        const modal = document.getElementById('pauseInfoModalOverlay');
+        if (modal) modal.style.display = 'none';
+        const labelMap = {
+            'delay_5s': 'Pause Info: 5s Delay',
+            'delay_10s': 'Pause Info: 10s Delay',
+            'delay_20s': 'Pause Info: 20s Delay',
+            'immediate': 'Pause Info: Immediate',
+            'off': 'Pause Info: Disabled'
+        };
+        showHudToast(labelMap[mode] || 'Pause Info Updated');
+        hidePauseInfoOverlay();
+        if (!globalIsPlaying) {
+            schedulePauseInfoOverlay();
+        }
+    };
+
+    window.togglePipFromContext = () => {
+        closeContextMenu();
+        send('togglePip');
+    };
+
+    window.toggleAudioModeFromContext = () => {
+        closeContextMenu();
+        send('toggleAudioMode');
+    };
+
+    window.openSettingsFromContext = () => {
+        closeContextMenu();
+        togglePanel('settingsPanel');
+    };
+
+    window.takeScreenshotFromContext = () => {
+        closeContextMenu();
+        send('screenshot');
+        showHudToast('Screenshot Saved');
+    };
+
+    window.copyCurrentTimecode = () => {
+        closeContextMenu();
+        const timeStr = fmt(currentPosMs);
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(timeStr);
+            showHudToast(`Copied timecode: ${timeStr}`);
+        }
+    };
+
+    window.copyStreamUrlFromContext = () => {
+        closeContextMenu();
+        const activeLink = linksData.find(l => l.isActive);
+        const url = activeLink?.url || (window.currentStreamUrl || '');
+        if (url && navigator.clipboard) {
+            navigator.clipboard.writeText(url);
+            showHudToast('Copied stream URL');
+        } else {
+            showHudToast('No active stream URL');
+        }
+    };
+
+    // Context Menu Event Listeners
+    document.addEventListener('contextmenu', e => {
+        if (e.target.closest('input,textarea,select')) return;
+        e.preventDefault();
+        showContextMenu(e.clientX, e.clientY);
+    });
+
+    // Stop mousedown and wheel events inside the menu from bubbling up
+    if (ctxMenu) {
+        ctxMenu.addEventListener('mousedown', e => e.stopPropagation());
+        ctxMenu.addEventListener('wheel', e => e.stopPropagation(), { passive: true });
+    }
+
+    // Dismiss when clicking anywhere outside the menu
+    document.addEventListener('mousedown', e => {
+        if (ctxMenu && ctxMenu.style.display === 'block' && !ctxMenu.contains(e.target)) {
+            closeContextMenu();
+        }
+    });
+
+    // Keyboard Shortcuts
+    // Prevent UI zooming
+    document.addEventListener('wheel', e => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+    document.addEventListener('keydown', e => {
+        if (e.ctrlKey && (e.key === '=' || e.key === '-' || e.key === '0')) { e.preventDefault(); return; }
+        if (e.target.closest('input, textarea, [contenteditable]')) return;
+        if (document.activeElement && (document.activeElement.matches('input, textarea, [contenteditable]') || document.activeElement.closest('input, textarea, [contenteditable]'))) return;
+        if (document.activeElement && document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+            document.activeElement.blur();
+        }
+
+        // Dismiss context menu first on any keypress
+        if (ctxMenu && ctxMenu.style.display === 'block') {
+            closeContextMenu();
+            if (e.key === 'Escape') return;
+        }
+
+        const shortcutsModal = document.getElementById('shortcutsModalOverlay');
+        if (shortcutsModal && shortcutsModal.style.display === 'flex') {
+            if (e.key === 'Escape') { closeShortcutsModal(); }
+            return;
+        }
+
+        const pauseModal = document.getElementById('pauseInfoModalOverlay');
+        if (pauseModal && pauseModal.style.display === 'flex') {
+            if (e.key === 'Escape') { closePauseInfoModal(); }
+            return;
+        }
+
+        // Percentage seek (0-9)
+        if (!e.ctrlKey && !e.altKey && !e.metaKey && e.key >= '0' && e.key <= '9') {
+            const pct = parseInt(e.key) * 0.1;
+            if (durationMs > 0) {
+                const targetMs = durationMs * pct;
+                send('seekTo', targetMs);
+                showHudToast(`Seek: ${Math.round(pct * 100)}% (${fmt(targetMs)})`);
+                if (document.body.classList.contains('hidden-controls')) {
+                    triggerKeyboardSeekingHud();
+                }
+            }
+            return;
+        }
+
+        switch (e.code) {
+            case 'Space': case 'KeyK':
+                e.preventDefault();
+                const probingOvl = document.getElementById('linkProbingOverlay');
+                if (probingOvl && probingOvl.classList.contains('active') && !probingOvl.classList.contains('dismissing')) {
+                    const playBtn = document.getElementById('probingPlayBtn');
+                    if (playBtn && playBtn.style.display !== 'none') {
+                        playBtn.click();
+                        return;
+                    }
+                }
+                send('togglePlay');
+                triggerActionFeedback(globalIsPlaying ? SVGS.pause : SVGS.play, 'center');
+                break;
+            case 'KeyS':
+                if (e.shiftKey || e.ctrlKey) {
+                    e.preventDefault();
+                    send('screenshot');
+                } else {
+                    const sBtn = document.getElementById('skipBtn');
+                    if (sBtn && sBtn.style.display !== 'none') {
+                        e.preventDefault();
+                        performSkipInterval(e);
+                    }
+                }
+                break;
+            case 'KeyF':
+                send('toggleFullscreen');
+                break;
+            case 'KeyA':
+                send('toggleAudioMode');
+                break;
+            case 'KeyP':
+                send('togglePip');
+                break;
+            case 'KeyM':
+                e.preventDefault();
+                const nextKeyMuted = !isMuted;
+                applyMuteVisuals(nextKeyMuted);
+                send('toggleMute');
+                break;
+            case 'KeyN':
+                e.preventDefault();
+                triggerNextEpisode();
+                break;
+            case 'KeyD':
+            case 'KeyI':
+                if (e.shiftKey) { e.preventDefault(); toggleStatsForNerds(); }
+                break;
+            case 'ArrowLeft':
+            case 'KeyJ':
+                e.preventDefault();
+                if (e.shiftKey) { doRelativeSeek(-2000); }
+                else { doRelativeSeek(-(window.seekDurationMs || 10000)); }
+                break;
+            case 'ArrowRight':
+            case 'KeyL':
+                e.preventDefault();
+                if (e.ctrlKey) { doRelativeSeek(85000); }
+                else if (e.shiftKey) { doRelativeSeek(2000); }
+                else { doRelativeSeek(window.seekDurationMs || 10000); }
+                break;
+            case 'ArrowUp':
+                e.preventDefault();
+                const maxVolUp = (typeof isVolumeMaxOn !== 'undefined' && isVolumeMaxOn) ? 200 : 100;
+                currentVolume = Math.min(maxVolUp, (currentVolume || 0) + 5);
+                volumeBar.value = currentVolume;
+                updateVolumeTrack(currentVolume);
+                send('setVolume', currentVolume);
+                showVolumeOsd(currentVolume);
+                break;
+            case 'ArrowDown':
+                e.preventDefault();
+                currentVolume = Math.max(0, (currentVolume || 0) - 5);
+                volumeBar.value = currentVolume;
+                updateVolumeTrack(currentVolume);
+                send('setVolume', currentVolume);
+                showVolumeOsd(currentVolume);
+                break;
+            case 'PageUp':
+                if (_cachedChapters && _cachedChapters.length > 0) {
+                    e.preventDefault();
+                    send('previousChapter');
+                }
+                break;
+            case 'PageDown':
+                if (_cachedChapters && _cachedChapters.length > 0) {
+                    e.preventDefault();
+                    send('nextChapter');
+                }
+                break;
+            case 'Equal': case 'NumpadAdd': case 'BracketRight':
+                currentSpeed = Math.min(4.0, Math.round((currentSpeed + 0.25) * 100) / 100);
+                window.currentSpeed = currentSpeed;
+                send('setSpeed', currentSpeed);
+                showHudToast(`Speed: ${currentSpeed}x`);
+                syncSpeedBadge(currentSpeed);
+                break;
+            case 'Minus': case 'NumpadSubtract': case 'BracketLeft':
+                currentSpeed = Math.max(0.25, Math.round((currentSpeed - 0.25) * 100) / 100);
+                window.currentSpeed = currentSpeed;
+                send('setSpeed', currentSpeed);
+                showHudToast(`Speed: ${currentSpeed}x`);
+                syncSpeedBadge(currentSpeed);
+                break;
+            case 'Backspace':
+                currentSpeed = 1.0;
+                window.currentSpeed = 1.0;
+                send('setSpeed', 1.0);
+                showHudToast('Speed: 1.0x (Normal)');
+                syncSpeedBadge(1.0);
+                break;
+            case 'KeyZ':
+                subDelaySec = Math.round((subDelaySec - 0.1) * 10) / 10;
+                send('setSubDelay', -0.1);
+                showHudToast(`Sub Delay: ${subDelaySec > 0 ? '+' : ''}${Math.round(subDelaySec * 1000)}ms`);
+                break;
+            case 'KeyX':
+                subDelaySec = Math.round((subDelaySec + 0.1) * 10) / 10;
+                send('setSubDelay', 0.1);
+                showHudToast(`Sub Delay: ${subDelaySec > 0 ? '+' : ''}${Math.round(subDelaySec * 1000)}ms`);
+                break;
+            case 'KeyC':
+                send('cycleSubtitles');
+                showHudToast('Cycled Subtitle Track');
+                break;
+            case 'KeyV':
+                send('toggleSubVisibility');
+                showHudToast('Toggled Subtitles');
+                break;
+            case 'Slash': case 'F1': case 'KeyH':
+                if (e.key === '?' || e.code === 'F1' || e.code === 'KeyH') {
+                    openShortcutsModal();
+                }
+                break;
+            case 'Escape':
+                closeContextMenu();
+                closeShortcutsModal();
+                closeAllPanels();
+                if (typeof hideUpNextCard === 'function' && isUpNextPreRollActive) {
+                    hideUpNextCard(true);
+                }
+                break;
+        }
+    });
+
+    const toggleAutoPlayState = () => {
+        window.autoPlayEnabled = !window.autoPlayEnabled;
+        const btn = document.getElementById('btnToggleAutoPlay');
+        if (btn) {
+            btn.classList.toggle('active', window.autoPlayEnabled);
+            btn.innerText = window.autoPlayEnabled ? 'On' : 'Off';
+        }
+        const epSwitch = document.getElementById('epAutoPlaySwitch');
+        if (epSwitch) {
+            epSwitch.classList.toggle('active', window.autoPlayEnabled);
+        }
+        send('toggleAutoPlay', String(window.autoPlayEnabled));
+    };
+
+    const btnToggleAutoPlay = document.getElementById('btnToggleAutoPlay');
+    if (btnToggleAutoPlay) {
+        btnToggleAutoPlay.addEventListener('click', toggleAutoPlayState);
+    }
+
+    const epAutoPlayBtn = document.getElementById('epAutoPlayBtn');
+    if (epAutoPlayBtn) {
+        epAutoPlayBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleAutoPlayState();
+        });
+    }
+
+    const btnToggleEndTime = document.getElementById('btnToggleEndTime');
+    if (btnToggleEndTime) {
+        btnToggleEndTime.addEventListener('click', () => {
+            const isActive = btnToggleEndTime.classList.toggle('active');
+            send('setPrefShowEndTime', String(isActive));
+            if (typeof window.updateClockDisplay === 'function') window.updateClockDisplay();
+        });
+    }
+
+    const btnToggleClock = document.getElementById('btnToggleClock');
+    if (btnToggleClock) {
+        btnToggleClock.addEventListener('click', () => {
+            const isActive = btnToggleClock.classList.toggle('active');
+            send('setPrefShowClock', String(isActive));
+            if (typeof window.updateClockDisplay === 'function') window.updateClockDisplay();
+        });
+    }
+
+    const btnToggleServerQuality = document.getElementById('btnToggleServerQuality');
+    if (btnToggleServerQuality) {
+        btnToggleServerQuality.addEventListener('click', () => {
+            const isActive = btnToggleServerQuality.classList.toggle('active');
+            send('setPrefShowServerQuality', String(isActive));
+            if (typeof window.updateClockDisplay === 'function') window.updateClockDisplay();
+        });
+    }
+
+    const btnToggleAudioNorm = document.getElementById('btnToggleAudioNorm');
+    if (btnToggleAudioNorm) {
+        btnToggleAudioNorm.addEventListener('click', () => {
+            isAudioNormOn = btnToggleAudioNorm.classList.toggle('active');
+            send('setAudioNormalization', String(isAudioNormOn));
+        });
+    }
+
+    const audioNormChips = document.querySelectorAll('#audioNormChips .chip');
+    audioNormChips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            audioNormChips.forEach(c => c.classList.remove('active'));
+            chip.classList.add('active');
+            send('setAudioNormStrength', chip.getAttribute('data-val'));
+        });
+    });
+
+    const audioEqChips = document.querySelectorAll('#audioEqChips .chip');
+    audioEqChips.forEach(chip => {
+        chip.addEventListener('click', (e) => {
+            e.stopPropagation();
+            audioEqChips.forEach(c => c.classList.remove('active'));
+            chip.classList.add('active');
+            send('setAudioEqPreset', chip.getAttribute('data-val'));
+        });
+    });
+
+    const btnToggleAudioSpatial = document.getElementById('btnToggleAudioSpatial');
+    if (btnToggleAudioSpatial) {
+        btnToggleAudioSpatial.addEventListener('click', () => {
+            isAudioSpatialOn = btnToggleAudioSpatial.classList.toggle('active');
+            send('setAudioSpatial', String(isAudioSpatialOn));
+        });
+    }
+
+    const audioDelaySlider = document.getElementById('audioDelaySlider');
+    const audioDelayVal = document.getElementById('audioDelayVal');
+    if (audioDelaySlider && audioDelayVal) {
+        audioDelaySlider.addEventListener('input', (e) => {
+            e.stopPropagation();
+            const val = parseFloat(audioDelaySlider.value).toFixed(2);
+            audioDelayVal.innerText = val + 's';
+        });
+        audioDelaySlider.addEventListener('change', (e) => {
+            e.stopPropagation();
+            send('setAudioDelay', audioDelaySlider.value);
+        });
+    }
+    const btnToggleVolumeMax = document.getElementById('btnToggleVolumeMax');
+    if (btnToggleVolumeMax) {
+        btnToggleVolumeMax.addEventListener('click', () => {
+            isVolumeMaxOn = btnToggleVolumeMax.classList.toggle('active');
+            if (volumeBar) {
+                volumeBar.max = isVolumeMaxOn ? '200' : '100';
+            }
+            if (!isVolumeMaxOn && currentVolume > 100) {
+                currentVolume = 100;
+                volumeBar.value = 100;
+                updateVolumeTrack(100);
+                send('setVolume', 100);
+                showVolumeOsd(100);
+            } else {
+                updateVolumeTrack(currentVolume);
+            }
+            send('setAudioVolumeMax', String(isVolumeMaxOn));
+        });
+    }
+
+    // Video Ended / Up Next Docked Card Logic
+    let isUpNextPreRollActive = false;
+    let isUpNextHovered = false;
+    let upNextDismissedEpisodeId = null;
+
+    function hideUpNextCard(markDismissed = true) {
+        if (endCountdownTimer) {
+            clearInterval(endCountdownTimer);
+            endCountdownTimer = null;
+        }
+        isUpNextPreRollActive = false;
+        isUpNextHovered = false;
+        if (markDismissed && currentEpisodeId) {
+            upNextDismissedEpisodeId = currentEpisodeId;
+        }
+        const overlay = document.getElementById('videoEndedOverlay');
+        if (overlay) overlay.style.display = 'none';
+        evaluateUIStates();
+        send('hideVideoEnded', '1');
+    }
+    window.hideUpNextCard = hideUpNextCard;
+
+    function triggerUpNextPreRoll(secondsRemaining) {
+        const activeIdx = (episodesData || []).findIndex(e => e.isActive);
+        const nextEp = (activeIdx !== -1 && activeIdx < (episodesData || []).length - 1) ? episodesData[activeIdx + 1] : null;
+        if (!nextEp) return;
+
+        isUpNextPreRollActive = true;
+        const overlay = document.getElementById('videoEndedOverlay');
+        const card = document.getElementById('videoEndedNextCard');
+        const thumb = document.getElementById('videoEndedThumb');
+        const epLabel = document.getElementById('videoEndedNextEp');
+        const titleLabel = document.getElementById('videoEndedNextTitle');
+        const descLabel = document.getElementById('videoEndedNextDesc');
+        const timerText = document.getElementById('videoEndedSubtext');
+        const durationLabel = document.getElementById('videoEndedDuration');
+        const progressFill = document.getElementById('videoEndedProgressBar');
+
+        if (thumb) {
+            const fallbackSrc = (window.lastMeta && window.lastMeta.backdropUrl) || '';
+            const targetSrc = nextEp.posterUrl || fallbackSrc || '';
+            thumb.onerror = function() {
+                if (fallbackSrc && this.src !== fallbackSrc) {
+                    this.src = fallbackSrc;
+                } else {
+                    this.style.display = 'none';
+                }
+            };
+            thumb.src = targetSrc;
+            thumb.style.display = targetSrc ? 'block' : 'none';
+        }
+
+        const sNum = (nextEp.season !== undefined && nextEp.season !== null) ? nextEp.season : 1;
+        const epNum = nextEp.episode || (activeIdx + 2);
+        if (epLabel) {
+            epLabel.innerText = `S${sNum} E${epNum}`;
+        }
+        if (titleLabel) {
+            titleLabel.innerText = nextEp.title || ('Episode ' + epNum);
+        }
+        if (durationLabel) {
+            durationLabel.innerText = nextEp.runTime ? `• ${nextEp.runTime}m` : '';
+        }
+        if (descLabel) {
+            descLabel.innerText = (nextEp.description || '').replace(/\|\|DATE:.*?\|\|/gi, '').trim() || 'No description available.';
+        }
+
+        if (overlay) overlay.style.display = 'flex';
+        evaluateUIStates();
+
+        const isAutoPlay = window.autoPlayEnabled !== false;
+        if (endCountdownTimer) {
+            clearInterval(endCountdownTimer);
+            endCountdownTimer = null;
+        }
+
+        if (isAutoPlay) {
+            currentEndCountdown = Math.max(1, Math.min(15, secondsRemaining || 15));
+            const totalDuration = currentEndCountdown;
+            if (timerText) timerText.innerText = `Next in ${currentEndCountdown}s`;
+            if (progressFill) progressFill.style.width = '0%';
+
+            endCountdownTimer = setInterval(() => {
+                if (isUpNextHovered) return; // Pause countdown while reading synopsis on hover
+
+                currentEndCountdown--;
+                const elapsed = totalDuration - currentEndCountdown;
+                const pct = Math.min(100, Math.max(0, (elapsed / totalDuration) * 100));
+                if (progressFill) progressFill.style.width = `${pct}%`;
+
+                if (currentEndCountdown <= 0) {
+                    clearInterval(endCountdownTimer);
+                    endCountdownTimer = null;
+                    isUpNextPreRollActive = false;
+                    triggerNextEpisode();
+                } else {
+                    if (timerText) timerText.innerText = `Next in ${currentEndCountdown}s`;
+                }
+            }, 1000);
+        } else {
+            if (timerText) timerText.innerText = 'Up Next';
+            if (progressFill) progressFill.style.width = '0%';
+        }
+
+        if (card && !card._boundEvents) {
+            card._boundEvents = true;
+            card.onclick = (e) => {
+                e.stopPropagation();
+                if (endCountdownTimer) {
+                    clearInterval(endCountdownTimer);
+                    endCountdownTimer = null;
+                }
+                triggerNextEpisode();
+            };
+            card.onmouseenter = () => { isUpNextHovered = true; };
+            card.onmouseleave = () => { isUpNextHovered = false; };
+        }
+
+        const dismissBtn = document.getElementById('btnDismissEnded');
+        if (dismissBtn && !dismissBtn._bound) {
+            dismissBtn._bound = true;
+            dismissBtn.onclick = (e) => {
+                e.stopPropagation();
+                hideUpNextCard(true);
+            };
+        }
+
+        if (overlay && !overlay._boundDismiss) {
+            overlay._boundDismiss = true;
+            overlay.onclick = (e) => {
+                if (e.target === overlay) {
+                    hideUpNextCard(true);
+                }
+            };
+        }
+    }
+    window.triggerUpNextPreRoll = triggerUpNextPreRoll;
+
+    window.showVideoEnded = (hasNextEpisode, autoPlayEnabled) => {
+        if (hasNextEpisode) {
+            triggerUpNextPreRoll(5);
+        } else {
+            hideUpNextCard(true);
+        }
+    };
+
+
+    // ── PiP Mode UI Logic ────────────────────────────────────────────────
+    const pipPlayIcon = document.getElementById('pipPlayIcon');
+    const pipPauseIcon = document.getElementById('pipPauseIcon');
+    const updatePipPlayPauseIcon = () => {
+        if (pipPlayIcon && pipPauseIcon) {
+            if (globalIsPlaying) {
+                pipPlayIcon.style.display = 'none';
+                pipPauseIcon.style.display = 'block';
+            } else {
+                pipPlayIcon.style.display = 'block';
+                pipPauseIcon.style.display = 'none';
+            }
+        }
+    };
+    window.updatePipPlayPauseIcon = updatePipPlayPauseIcon;
+
+    window.setPipUi = (active) => {
+        if (active) {
+            document.body.classList.add('is-pip');
+            updatePipPlayPauseIcon();
+        } else {
+            document.body.classList.remove('is-pip');
+        }
+    };
+
+    // PiP overlay button listeners
+    const pipPlayPauseBtn = document.getElementById('pipPlayPauseBtn');
+    const pipRestoreBtn = document.getElementById('pipRestoreBtn');
+    if (pipPlayPauseBtn) {
+        pipPlayPauseBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            send('togglePlay');
+        });
+    }
+    if (pipRestoreBtn) {
+        pipRestoreBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            send('togglePip'); // Restores normal mode
+        });
+    }
+
+    const pipRewindBtn = document.getElementById('pipRewindBtn');
+    const pipForwardBtn = document.getElementById('pipForwardBtn');
+    if (pipRewindBtn) {
+        pipRewindBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const seekMs = window.seekDurationMs || 10000;
+            doRelativeSeek(-seekMs);
+        });
+    }
+    if (pipForwardBtn) {
+        pipForwardBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const seekMs = window.seekDurationMs || 10000;
+            doRelativeSeek(seekMs);
+        });
+    }
+
+    // ── Window Dragging via IPC ──────────────────────────────────────────
+    const pipOverlay = document.getElementById('pipOverlay');
+    if (pipOverlay) {
+        pipOverlay.addEventListener('mousedown', (e) => {
+            // Do not start drag if clicking on a button or an edge
+            if (e.target.closest('button')) return;
+            if (e.target.closest('.pip-resize-edge')) return;
+            // Tell the backend to natively start dragging the window
+            send('startWindowDrag');
+        });
+    }
+
+    document.querySelectorAll('.pip-resize-edge').forEach(edge => {
+        edge.addEventListener('mousedown', (e) => {
+            e.stopPropagation();
+            send('startWindowResize', edge.getAttribute('data-edge'));
+        });
+    });
+
+    // ── Drag & Drop Subtitle Files ───────────────────────────────────────
+    window.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer) {
+            e.dataTransfer.dropEffect = 'copy';
+        }
+    });
+
+    window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            const file = e.dataTransfer.files[0];
+            const validExts = ['.srt', '.vtt', '.ass', '.ssa', '.sub'];
+            const lower = (file.name || '').toLowerCase();
+            if (validExts.some(ext => lower.endsWith(ext))) {
+                if (file.path) {
+                    send('loadLocalSubtitleFile', file.path);
+                }
+            }
+        }
+    });
+
+    // Ready
+    let _uiReadyDispatched = false;
+    const notifyReady = () => {
+        if (_uiReadyDispatched) return;
+        _uiReadyDispatched = true;
+        send('ui_ready');
+    };
+
+    if (window.chrome && window.chrome.webview) {
+        if (!window._msgListenerAttached) {
+            window._msgListenerAttached = true;
+            window.chrome.webview.addEventListener('message', e => {
+                handleMessage(e.data);
+            });
+        }
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', notifyReady);
+    } else {
+        notifyReady();
+    }
+
+    // Safety fallback: if WebView bridge initialization was delayed, retry handshake
+    let _readyRetryCount = 0;
+    const _readyRetryInterval = setInterval(() => {
+        _readyRetryCount++;
+        if (_readyRetryCount > 20) {
+            clearInterval(_readyRetryInterval);
+            return;
+        }
+        if (window.chrome && window.chrome.webview) {
+            if (!window._msgListenerAttached) {
+                window._msgListenerAttached = true;
+                window.chrome.webview.addEventListener('message', e => {
+                    handleMessage(e.data);
+                });
+            }
+            send('ui_ready');
+        }
+    }, 250);
