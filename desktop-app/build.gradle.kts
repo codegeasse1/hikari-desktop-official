@@ -117,7 +117,7 @@ dependencies {
 // Compose Desktop application configuration
 compose.desktop {
     application {
-        mainClass = "com.hikari.desktop.MainKt"
+        mainClass = "com.codegeasse.hikari.desktop.MainKt"
         jvmArgs +=
             listOf(
                 "-Xms256m",
@@ -173,7 +173,7 @@ compose.desktop {
             windows {
                 iconFile.set(project.file("src/main/resources/app_icon.ico"))
                 menuGroup = "Hikari Desktop"
-                upgradeUuid = "d7e9b04f-723a-4467-84df-fcf470c1ae02"
+                upgradeUuid = "e3f1a2b4-c5d6-4e7f-a8b9-c0d1e2f3a4b5"
                 shortcut = true // Creates a Desktop shortcut during install
                 perUserInstall = true // Installs per-user, avoids needing admin rights
             }
@@ -217,13 +217,13 @@ tasks.withType<Test> {
 }
 
 tasks.register<JavaExec>("runTestWebViewPlayer") {
-    mainClass.set("com.hikari.desktop.test.TestWebViewPlayerKt")
+    mainClass.set("com.codegeasse.hikari.desktop.test.TestWebViewPlayerKt")
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs("-Djava.library.path=appResources/windows/jni", "-Djna.library.path=appResources/windows/mpv")
 }
 
 tasks.register<JavaExec>("runTestMpvPlayer") {
-    mainClass.set("com.hikari.desktop.test.TestMpvPlayerKt")
+    mainClass.set("com.codegeasse.hikari.desktop.test.TestMpvPlayerKt")
     classpath = sourceSets["main"].runtimeClasspath
     jvmArgs("-Djna.library.path=appResources/windows/mpv")
 }

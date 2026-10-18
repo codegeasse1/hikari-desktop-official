@@ -1,6 +1,6 @@
 [Setup]
 #include "version.iss"
-AppId={{C626E83F-8C3A-4D78-B5B3-FA19FE223E0C}}
+AppId={{B4A7F2E1-9C3D-4E5A-AF6B-1D2C3E4F5A6B}}
 AppName=Hikari
 AppVersion={#AppVersion}
 AppPublisher=Hikari

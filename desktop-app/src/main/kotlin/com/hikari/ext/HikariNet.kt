@@ -1,6 +1,6 @@
 package com.hikari.ext
 
-import com.hikari.common.logging.AppLogger
+import com.codegeasse.hikari.common.logging.AppLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
