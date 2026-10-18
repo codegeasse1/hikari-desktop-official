@@ -1,9 +1,9 @@
 package com.lagradost.cloudstream3.plugins
 
-import com.hikari.desktop.repo.DesktopRepositoryManager
-import com.hikari.desktop.utils.appScope
+import com.codegeasse.hikari.desktop.repo.DesktopRepositoryManager
+import com.codegeasse.hikari.desktop.utils.appScope
 import com.lagradost.cloudstream3.ui.settings.extensions.RepositoryData
-import com.hikari.common.logging.AppLogger
+import com.codegeasse.hikari.common.logging.AppLogger
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
 
@@ -83,7 +83,7 @@ object RepositoryManager {
             }
         }
 
-        val repo = com.hikari.desktop.repo.PluginNetworkClient.fetchRepository(url) ?: return null
+        val repo = com.codegeasse.hikari.desktop.repo.PluginNetworkClient.fetchRepository(url) ?: return null
         return Repository(
             iconUrl = repo.iconUrl,
             name = repo.name,

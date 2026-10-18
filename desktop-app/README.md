@@ -9,6 +9,6 @@ Unlike the Android application, this module operates in a standard JVM desktop e
 ## Architecture Guidelines
 
 - **UI Framework:** All UI is written in Compose Multiplatform following an MVI architecture with reactive StateFlows.
-- **Unified Dialog System:** All popups and dialogs MUST use `HikariAlertDialog` or `HikariCustomDialog` from `com.hikari.desktop.ui.components.CloudstreamDialogs` to maintain visual consistency and Amoled Pure Black theme support.
+- **Unified Dialog System:** All popups and dialogs MUST use `HikariAlertDialog` or `HikariCustomDialog` from `com.codegeasse.hikari.desktop.ui.components.CloudstreamDialogs` to maintain visual consistency and Amoled Pure Black theme support.
 - **Thread Safety:** Database writes and file I/O must always run on background dispatchers (`Dispatchers.IO`).
 - **Compilation:** Use `launch.bat` (or `launch.bat dev` / `launch.bat build`) in the root directory for development and packaging.

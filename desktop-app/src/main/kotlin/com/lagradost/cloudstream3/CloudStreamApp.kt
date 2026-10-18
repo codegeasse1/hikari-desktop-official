@@ -29,22 +29,22 @@ class CloudStreamApp {
         // Simple key/value helpers using DesktopKVStore
         fun <T> setKey(folder: String, path: String, value: T) {
             if (value == null) {
-                com.hikari.common.storage.DesktopDataStore.removeKey(path)
+                com.codegeasse.hikari.common.storage.DesktopDataStore.removeKey(path)
             } else {
-                com.hikari.common.storage.DesktopDataStore.setKey(path, value)
+                com.codegeasse.hikari.common.storage.DesktopDataStore.setKey(path, value)
             }
         }
 
         fun <T> setKey(path: String, value: T) {
             if (value == null) {
-                com.hikari.common.storage.DesktopDataStore.removeKey(path)
+                com.codegeasse.hikari.common.storage.DesktopDataStore.removeKey(path)
             } else {
-                com.hikari.common.storage.DesktopDataStore.setKey(path, value)
+                com.codegeasse.hikari.common.storage.DesktopDataStore.setKey(path, value)
             }
         }
 
         fun removeKey(folder: String, path: String) {
-            com.hikari.common.storage.DesktopDataStore.removeKey(path)
+            com.codegeasse.hikari.common.storage.DesktopDataStore.removeKey(path)
         }
 
         inline fun <reified T> getKey(path: String, defVal: T?): T? {
@@ -62,9 +62,9 @@ class CloudStreamApp {
             val prefName = if (path.contains("_")) path.substringBefore("_") + "_" else "global_"
             val keyWithoutPrefix = if (path.contains("_")) path.substringAfter("_") else path
 
-            com.hikari.common.storage.PluginSettingsSchemaRegistry.register(prefName, keyWithoutPrefix, type, defVal, false)
+            com.codegeasse.hikari.common.storage.PluginSettingsSchemaRegistry.register(prefName, keyWithoutPrefix, type, defVal, false)
 
-            return com.hikari.common.storage.DesktopDataStore.getKey<T>(path) ?: defVal
+            return com.codegeasse.hikari.common.storage.DesktopDataStore.getKey<T>(path) ?: defVal
         }
     }
 }

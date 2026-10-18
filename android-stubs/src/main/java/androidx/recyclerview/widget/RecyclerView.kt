@@ -3,7 +3,7 @@ package androidx.recyclerview.widget
 import android.content.Context
 import android.view.View
 import android.view.ViewGroup
-import com.hikari.desktop.shadowui.ShadowUi
+import com.codegeasse.hikari.desktop.shadowui.ShadowUi
 
 open class RecyclerView : ViewGroup {
     constructor() : super()

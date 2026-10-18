@@ -1,6 +1,6 @@
 package com.lagradost.cloudstream3.plugins
 
-import com.hikari.runtime.loader.ExtensionLoader
+import com.codegeasse.hikari.runtime.loader.ExtensionLoader
 
 /**
  * Stub for Android's PluginManager class.

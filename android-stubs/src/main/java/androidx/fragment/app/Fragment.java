@@ -5,8 +5,8 @@ import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
-import com.hikari.desktop.shadowui.ShadowDialog;
-import com.hikari.desktop.shadowui.ShadowUi;
+import com.codegeasse.hikari.desktop.shadowui.ShadowDialog;
+import com.codegeasse.hikari.desktop.shadowui.ShadowUi;
 
 @android.annotation.Implemented
 public class Fragment {

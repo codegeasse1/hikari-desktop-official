@@ -49,14 +49,14 @@ class AccountManager {
 
         fun accounts(prefix: String): Array<AuthData> {
             require(prefix != "NONE")
-            return com.hikari.common.storage.DesktopDataStore.getKey<Array<AuthData>>(
+            return com.codegeasse.hikari.common.storage.DesktopDataStore.getKey<Array<AuthData>>(
                 "${ACCOUNT_TOKEN}_${prefix}_$currentAccount",
             ) ?: arrayOf()
         }
 
         fun updateAccounts(prefix: String, array: Array<AuthData>) {
             require(prefix != "NONE")
-            com.hikari.common.storage.DesktopDataStore.setKey("${ACCOUNT_TOKEN}_${prefix}_$currentAccount", array)
+            com.codegeasse.hikari.common.storage.DesktopDataStore.setKey("${ACCOUNT_TOKEN}_${prefix}_$currentAccount", array)
             synchronized(cachedAccounts) {
                 cachedAccounts[prefix] = array
                 _accountsFlow.value = cachedAccounts.toMap()

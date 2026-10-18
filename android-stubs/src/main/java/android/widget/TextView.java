@@ -3,7 +3,7 @@ package android.widget;
 import android.content.Context;
 import android.graphics.Typeface;
 import android.view.View;
-import com.hikari.desktop.shadowui.ShadowUi;
+import com.codegeasse.hikari.desktop.shadowui.ShadowUi;
 
 @android.annotation.Stub
 public class TextView extends View {

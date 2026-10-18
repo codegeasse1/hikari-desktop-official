@@ -1,7 +1,7 @@
 package android.app
 
 import android.content.Context
-import com.hikari.common.platform.PlatformPaths
+import com.codegeasse.hikari.common.platform.PlatformPaths
 import java.io.File
 
 open class Application : Context {

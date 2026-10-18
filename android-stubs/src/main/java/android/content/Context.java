@@ -11,7 +11,7 @@ public class Context {
     public static final int MODE_PRIVATE = 0;
     public static final String WINDOW_SERVICE = "window";
 
-    private static final String DEFAULT_PACKAGE_NAME = "com.hikari.desktop";
+    private static final String DEFAULT_PACKAGE_NAME = "com.codegeasse.hikari.desktop";
 
     private final File baseDir;
     private final File filesDir;

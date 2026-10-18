@@ -1,6 +1,6 @@
 package dalvik.system
 
-import com.hikari.desktop.dex.DexJar
+import com.codegeasse.hikari.desktop.dex.DexJar
 import java.io.File
 import java.net.URLClassLoader
 

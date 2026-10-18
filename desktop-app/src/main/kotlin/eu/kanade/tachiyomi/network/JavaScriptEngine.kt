@@ -1,14 +1,14 @@
 package eu.kanade.tachiyomi.network
 
 import android.content.Context
-import com.hikari.desktop.js.JsRuntime
+import com.codegeasse.hikari.desktop.js.JsRuntime
 import tachiyomi.core.common.util.lang.withIOContext
 
 /**
  * Util for evaluating JavaScript in sources.
  *
  * Aniyomi runs this on `app.cash.quickjs`; the desktop runs every JS engine on
- * V8 ([com.hikari.desktop.js.JsRuntime]), the same VM the nuvio and SkyStream
+ * V8 ([com.codegeasse.hikari.desktop.js.JsRuntime]), the same VM the nuvio and SkyStream
  * runtimes use, so the class keeps Aniyomi's exact public shape — that is all
  * an extension's bytecode links against — and delegates to it.
  */

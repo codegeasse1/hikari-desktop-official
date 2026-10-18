@@ -4,8 +4,8 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.view.View;
 import android.view.Window;
-import com.hikari.desktop.shadowui.ShadowDialog;
-import com.hikari.desktop.shadowui.ShadowUi;
+import com.codegeasse.hikari.desktop.shadowui.ShadowDialog;
+import com.codegeasse.hikari.desktop.shadowui.ShadowUi;
 
 @android.annotation.Stub
 public class Dialog implements DialogInterface {
@@ -97,7 +97,7 @@ public class Dialog implements DialogInterface {
 
         // Preserve Cloudflare interceptor hook
         try {
-            Class<?> interceptor = Class.forName("com.hikari.desktop.network.DesktopCfDialogInterceptor");
+            Class<?> interceptor = Class.forName("com.codegeasse.hikari.desktop.network.DesktopCfDialogInterceptor");
             java.lang.reflect.Method method = interceptor.getMethod("onShowCalled", Object.class, String.class);
             method.invoke(null, this, null);
         } catch (Exception ignored) {}
