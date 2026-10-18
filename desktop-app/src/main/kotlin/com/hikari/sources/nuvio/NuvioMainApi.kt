@@ -346,15 +346,10 @@ class NuvioMainApi(
         }
 
         internal fun mapStreamRow(s: JSONObject, providerName: String): MappedStream? {
-            var url = s.optString("url")
-            var headers = s.optJSONObject("headers")
-            if (url.isBlank() && s.has("url")) {
-                val nested = s.optJSONObject("url")
-                if (nested != null) {
-                    url = nested.optString("url")
-                    headers = nested.optJSONObject("headers") ?: headers
-                }
-            }
+            val nested = s.optJSONObject("url")
+            var url = if (nested != null) nested.optString("url") else s.optString("url")
+            var headers = (if (nested != null) nested.optJSONObject("headers") else null)
+                ?: s.optJSONObject("headers")
             val ytId = s.optString("ytId").ifBlank { null }
             val external = s.optString("externalUrl")
             if (url.isBlank() && external.isBlank() && ytId == null) return null
