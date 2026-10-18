@@ -67,7 +67,7 @@ class SkyStreamMainApiTest {
         val mapped = mapStreams("p", "Disp", arr)
         assertEquals(1, mapped.size)
         assertEquals("CDN 1080p", mapped[0].name)
-        assertEquals(StreamKind.VIDEO, mapped[0].kind)
+        assertEquals(SkyStreamMainApi.StreamKind.VIDEO, mapped[0].kind)
         assertTrue(mapped[0].headers["User-Agent"]?.contains("Chrome") == true)
     }
 
@@ -76,7 +76,7 @@ class SkyStreamMainApiTest {
         val api = api()
         val arr = JSONArray()
         arr.put(JSONObject().put("url", "https://s.test/e1").put("season", 2).put("episode", 5).put("name", "Pilot"))
-        val eps = with(api) { toEpisodes("p", arr) }
+        val eps = with(SkyStreamMainApi) { api.toEpisodes("p", arr) }
         assertEquals(1, eps.size)
         assertEquals(2, eps[0].season)
         assertEquals(5, eps[0].episode)
