@@ -1,8 +1,6 @@
-# CloudStream Desktop (Unofficial Client)
+# Hikari Desktop (Official)
 
-Desktop-native streaming client built with **Compose Multiplatform** for 64-bit Windows. Runs Android CloudStream extensions natively on a desktop JVM without requiring emulators or compatibility layers.
-
-> [!CAUTION]
+Desktop-native streaming client built with **Compose Multiplatform** for 64-bit Windows. Hikari runs CloudStream-compatible extensions plus Nuvio, Stremio, SkyStream, Aniyomi, IPTV and Hiki sources.
 > **Active Developer & Experimental Pre-Alpha State**
 > * **Developer-Only Environment:** This repository is an active, fast-moving development and experimentation codebase intended strictly for developers and technical testers. It is **not** a stable release and is **not** intended for general or regular end-user consumption.
 > * **AI-Assisted Codebase & Instability:** This codebase is actively researched, developed, and refactored with AI assistance. It may contain highly experimental implementations, non-standard patterns, and volatile code.

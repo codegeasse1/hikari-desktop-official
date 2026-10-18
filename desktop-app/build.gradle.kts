@@ -128,11 +128,11 @@ compose.desktop {
 
         nativeDistributions {
             // Inno Setup (installer/setup.iss) handles packaging — no native installer format needed here
-            packageName = "CloudStream-Desktop"
+            packageName = "Hikari-Desktop"
             // jpackage STRICTLY requires version to be numeric (e.g. 0.1.5). Strip any -beta or -pre-alpha suffixes.
             packageVersion = project.findProperty("APP_VERSION")?.toString()?.substringBefore('-') ?: "0.0.0"
-            description = "CloudStream Desktop Client"
-            vendor = "CloudStream"
+            description = "Hikari Desktop"
+            vendor = "Hikari"
             includeAllModules = false
             modules(
                 "java.base",
@@ -162,7 +162,7 @@ compose.desktop {
 
             windows {
                 iconFile.set(project.file("src/main/resources/app_icon.ico"))
-                menuGroup = "CloudStream Desktop"
+                menuGroup = "Hikari Desktop"
                 upgradeUuid = "d7e9b04f-723a-4467-84df-fcf470c1ae02"
                 shortcut = true // Creates a Desktop shortcut during install
                 perUserInstall = true // Installs per-user, avoids needing admin rights

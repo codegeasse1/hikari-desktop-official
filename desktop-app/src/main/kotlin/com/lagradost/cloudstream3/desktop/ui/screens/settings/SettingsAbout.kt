@@ -28,7 +28,7 @@ fun SettingsAbout() {
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        SettingsGroupCard(title = "CloudStream Desktop") {
+        SettingsGroupCard(title = "Hikari Desktop") {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -50,7 +50,7 @@ fun SettingsAbout() {
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    "An independent, desktop-native client powered by the CloudStream core engine. For desktop support and bug reports, use our Discord community below.",
+                    "An independent, desktop-native client powered by the Hikari media engine (CloudStream-compatible core plus Nuvio, Stremio, SkyStream, Aniyomi, IPTV and Hiki sources). For desktop support and bug reports, use our Discord community below.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
