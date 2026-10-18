@@ -1,9 +1,23 @@
 name: Build and Release
 
+# Continuous delivery: every CODE push to main builds, signs, and publishes
+# a new installer over the previous one (same AppId, higher AppVersion).
+# Docs-only changes (readme, changelogs, docs, license) skip the build.
 on:
   push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'CHANGELOG*'
+      - 'changelog*'
+      - 'LICENSE*'
     tags:
-      - 'v*' # Trigger on version tags like v0.1.2, v1.0.0
+      - 'v*'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -11,7 +25,12 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-
+    timeout-minutes: 45
+    env:
+      # Versioned tags (v1.2.3) release that exact version; every other code
+      # push ships a continuous build numbered by the run, which always
+      # counts as NEWER than the last one, so installers upgrade in place.
+      APP_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name && format('{0}', github.ref_name) || format('0.1.{0}', github.run_number) }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -20,6 +39,7 @@ jobs:
         fetch-depth: 0
 
     - name: Verify tag is on main
+      if: startsWith(github.ref, 'refs/tags/')
       shell: bash
       run: |
         git fetch origin main
@@ -68,8 +88,9 @@ jobs:
     - name: Build App (createDistributable)
       shell: bash
       run: |
-        # Extract version from tag (e.g., v0.1.4 -> 0.1.4)
-        VERSION=${GITHUB_REF_NAME#v}
+        # APP_VERSION is v1.2.3 on version tags, 0.1.<run> on continuous builds.
+        # Strip a leading v if present (v1.2.3 -> 1.2.3).
+        VERSION=${APP_VERSION#v}
         ./gradlew :desktop-app:createDistributable -PAPP_VERSION=$VERSION --no-daemon
 
     - name: Stamp installer version (higher AppVersion = upgrade, not side-by-side)
@@ -77,8 +98,8 @@ jobs:
       run: |
         # Inno installs OVER the previous version only when the AppId is stable
         # (installer/setup.iss, never change it) AND AppVersion increases.
-        # Strip any -suffix from the tag: Inno/jpackage need a plain number.
-        VERSION=${GITHUB_REF_NAME#v}
+        # Strip any -suffix from the version: Inno/jpackage need a plain number.
+        VERSION=${APP_VERSION#v}
         INNO_VER=${VERSION%%-*}
         echo "#define AppVersion \"$INNO_VER\"" > installer/version.iss
         cat installer/version.iss
@@ -162,10 +183,48 @@ jobs:
         & $signtool.FullName verify /a /v $file
         Remove-Item signing.pfx -Force
 
-    - name: Publish Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: desktop-app/build/outputs/Hikari-Setup.exe
-        generate_release_notes: true
-        prerelease: false
-        make_latest: true
+    - name: Publish release (versioned tag, or rolling continuous build)
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        EXE=desktop-app/build/outputs/Hikari-Setup.exe
+        ls -la "$EXE"
+        if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+          TAG="${GITHUB_REF#refs/tags/}"
+          VER="${TAG#v}"
+          TITLE="Hikari $VER"
+          NOTES="Signed build for Windows (.exe installer). Installs over the previous version."
+          LATEST="--latest"
+        else
+          TAG="continuous"
+          TITLE="Continuous build"
+          NOTES="Latest signed Hikari build for Windows (.exe installer), auto-built from main. Installs over the previous version."
+          LATEST=""
+        fi
+        published=0
+        for attempt in 1 2 3 4 5; do
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if gh release upload "$TAG" "$EXE" --repo "$GITHUB_REPOSITORY" --clobber; then
+              published=1
+              echo "published $EXE to $TAG (attempt $attempt)"
+              break
+            fi
+            echo "upload failed (attempt $attempt) — retrying in 10s"
+            sleep 10
+          else
+            # shellcheck disable=SC2086
+            if gh release create "$TAG" "$EXE" --repo "$GITHUB_REPOSITORY" \
+                --title "$TITLE" --notes "$NOTES" $LATEST; then
+              published=1
+              echo "release $TAG created (attempt $attempt)"
+              break
+            fi
+            echo "release create failed (attempt $attempt) — retrying in 10s"
+            sleep 10
+          fi
+        done
+        if [ "$published" != "1" ]; then
+          echo "FAILED to publish release after retries"
+          exit 1
+        fi
