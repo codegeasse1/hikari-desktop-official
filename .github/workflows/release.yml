@@ -170,6 +170,7 @@ jobs:
         & $signtool.FullName verify /a /v $file
         if ($LASTEXITCODE -ne 0) { Write-Host "Note: chain verify is untrusted (normal for a self-signed cert); the signature itself was applied." }
         Remove-Item signing.pfx -Force
+        exit 0
 
     - name: Install Inno Setup
       run: choco install innosetup --yes
@@ -240,6 +241,7 @@ jobs:
         & $signtool.FullName verify /a /v $file
         if ($LASTEXITCODE -ne 0) { Write-Host "Note: chain verify is untrusted (normal for a self-signed cert); the signature itself was applied." }
         Remove-Item signing.pfx -Force
+        exit 0
 
     - name: Publish release (versioned tag, or rolling continuous build)
       env:
