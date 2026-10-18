@@ -99,6 +99,15 @@ dependencies {
 
     testImplementation(kotlin("test"))
 
+    // Script engines + extension formats
+    implementation(libs.javet)
+    implementation(libs.javet.v8.windows)
+    implementation(libs.rxjava)
+    implementation(libs.okhttp.logging)
+    implementation(libs.jsoup)
+    val dex2jarLibs = fileTree("libs/dex2jar") { include("*.jar") }
+    implementation(dex2jarLibs)
+
     // SQLDelight
     implementation(libs.sqldelight.sqlite.driver)
     implementation(libs.sqldelight.coroutines.extensions)

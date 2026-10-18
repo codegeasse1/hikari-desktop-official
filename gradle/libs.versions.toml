@@ -50,6 +50,8 @@ safefile = "0.0.8"
 shimmer = "0.5.0"
 tmdbJava = "2.13.0"
 torrentserver = "7861970"
+javet = "4.1.2"
+rxjava = "1.3.8"
 tvprovider = "1.1.0"
 video = "1.0.0"
 slf4j = "2.0.12"
@@ -89,6 +91,10 @@ fragment-ktx = { module = "androidx.fragment:fragment-ktx", version.ref = "fragm
 fuzzywuzzy = { module = "me.xdrop:fuzzywuzzy", version.ref = "fuzzywuzzy" }
 jackson-module-kotlin = { module = "com.fasterxml.jackson.module:jackson-module-kotlin", version.ref = "jacksonModuleKotlin" }
 json = { module = "org.json:json", version.ref = "json" }
+javet = { group = "com.caoccao.javet", name = "javet", version.ref = "javet" }
+javet-v8-windows = { group = "com.caoccao.javet", name = "javet-v8-windows-x86_64", version.ref = "javet" }
+rxjava = { group = "io.reactivex", name = "rxjava", version.ref = "rxjava" }
+okhttp-logging = { group = "com.squareup.okhttp3", name = "logging-interceptor", version = "4.12.0" }
 jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
 junit = { module = "junit:junit", version.ref = "junit" }
 junit-ktx = { module = "androidx.test.ext:junit-ktx", version.ref = "junitKtx" }
