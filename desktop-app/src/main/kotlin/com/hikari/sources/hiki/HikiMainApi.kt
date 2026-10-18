@@ -156,9 +156,10 @@ class HikiMainApi(
                 s.isMpd -> ExtractorLinkType.DASH
                 else -> ExtractorLinkType.VIDEO
             }
+            val hash = s.infoHash?.takeIf { it.isNotBlank() }
             val streamUrl = when {
                 !s.url.isBlank() -> s.url
-                !s.infoHash.isNullOrBlank() -> magnetFor(s.infoHash!!, s.trackers, s.name.ifBlank { full.title })
+                hash != null -> magnetFor(hash, s.trackers, s.name.ifBlank { full.title })
                 !s.ytId.isNullOrBlank() -> "https://www.youtube.com/watch?v=" + s.ytId
                 else -> continue
             }

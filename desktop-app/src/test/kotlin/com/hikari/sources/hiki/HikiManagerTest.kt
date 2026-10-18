@@ -19,7 +19,7 @@ class HikiManagerTest {
 
     @Test
     fun pluginFileFilterMatchesCloudStreamPlusHiki() {
-        val dir = createTempDir("hiki-filter")
+        val dir = java.nio.file.Files.createTempDirectory("hiki-filter").toFile()
         try {
             val good = listOf("a.jar", "b.cs3", "c.hiki").map { File(dir, it).apply { writeText("x") } }
             val bad = listOf("a-jvm.jar", "b-secure.jar", "c.dex", "d.txt").map { File(dir, it).apply { writeText("x") } }
