@@ -46,7 +46,7 @@ class HikiMainApiTest {
         val series = api.load(seriesUrl) as com.lagradost.cloudstream3.TvSeriesLoadResponse
         assertEquals(1, series.episodes.size)
         var links = 0
-        val ok = api.loadLinks(series.dataUrl.ifBlank { series.url }, false, {}, { links++ })
+        val ok = api.loadLinks(series.episodes.first().data, false, {}, { links++ })
         assertTrue(ok)
         assertEquals(1, links)
     }
