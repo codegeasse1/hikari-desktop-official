@@ -17,6 +17,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -45,6 +46,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -327,8 +329,13 @@ private fun SourceRepoList(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                repos.forEach { url ->
+            LazyVerticalGrid(
+                columns = GridCells.Adaptive(minSize = 380.dp),
+                modifier = Modifier.fillMaxWidth().heightIn(min = 96.dp, max = 520.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                items(repos, key = { it }) { url ->
                     val entries = browse[url] ?: emptyList()
                     val installedCount = entries.count { it.installed }
                     Card(
@@ -341,7 +348,10 @@ private fun SourceRepoList(
                             modifier = Modifier.fillMaxSize().padding(12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            RepoAvatarBox(repoNames[url] ?: url)
+                            SourceRepoIcon(
+                                entries.firstOrNull { !it.iconUrl.isNullOrBlank() }?.iconUrl,
+                                repoNames[url] ?: url,
+                            )
                             Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                                 Text(
                                     repoNames[url] ?: url,
@@ -515,9 +525,11 @@ private fun SourceRepoDetail(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                             ),
                         ) {
-                            Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
-                                Text(
-                                    text = entry.name,
+                            Row(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                SourceRepoIcon(entry.iconUrl, entry.name)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = entry.name,
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
@@ -552,6 +564,7 @@ private fun SourceRepoDetail(
                                         shape = RoundedCornerShape(10.dp),
                                     ) {
                                         Text(if (entry.installed) "Installed" else "Install")
+                                        }
                                     }
                                 }
                             }
@@ -560,5 +573,24 @@ private fun SourceRepoDetail(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun SourceRepoIcon(iconUrl: String?, name: String) {
+    if (!iconUrl.isNullOrBlank() && !com.codegeasse.hikari.desktop.repo.DesktopRepositoryManager.isIconFailed(iconUrl)) {
+        coil3.compose.SubcomposeAsyncImage(
+            model = iconUrl,
+            contentDescription = null,
+            modifier = Modifier.padding(end = 12.dp).size(44.dp).clip(CircleShape),
+            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            loading = { RepoAvatarBox(name) },
+            error = {
+                com.codegeasse.hikari.desktop.repo.DesktopRepositoryManager.markIconFailed(iconUrl)
+                RepoAvatarBox(name)
+            },
+        )
+    } else {
+        RepoAvatarBox(name)
     }
 }

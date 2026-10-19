@@ -203,6 +203,7 @@ class NuvioMainApi(
             }
             val streamUrl = when {
                 mapped.url.isNotBlank() -> mapped.url
+                mapped.infoHash != null -> "magnet:?xt=urn:btih:" + mapped.infoHash.trim() + "&dn=" + java.net.URLEncoder.encode(mapped.name.ifBlank { displayName }, "UTF-8").replace("+", "%20")
                 mapped.ytId != null -> "https://www.youtube.com/watch?v=" + mapped.ytId
                 else -> continue
             }
@@ -219,8 +220,8 @@ class NuvioMainApi(
                     url = streamUrl,
                     type = type,
                 ) {
-                    referer = ""
-                    quality = Qualities.Unknown.value
+                    referer = mapped.headers["referer"] ?: mapped.headers["Referer"] ?: ""
+                    quality = qualityValue(mapped.qualityH)
                     headers = mapped.headers
                 }
             )
@@ -250,7 +251,34 @@ class NuvioMainApi(
             val headers: Map<String, String>,
             val subtitles: List<Pair<String, String>>,
             val ytId: String?,
+            val infoHash: String? = null,
+            val qualityH: Int? = null,
         )
+        internal fun parseStreamQuality(value: Any?): Int? {
+            val s = when (value) {
+                is Number -> value.toInt().toString()
+                is String -> value
+                else -> return null
+            }.trim().lowercase()
+            if (s.isEmpty() || s == "auto") return 0
+            if (s == "4k" || s == "uhd") return 2160
+            if (s == "2k" || s == "qhd") return 1440
+            val num = Regex("(\\d{3,4})").find(s)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+            if (num == 400) return null
+            return num
+        }
+        internal fun qualityValue(height: Int?): Int {
+            return when (height) {
+                2160 -> com.lagradost.cloudstream3.utils.Qualities.P2160.value
+                1440 -> com.lagradost.cloudstream3.utils.Qualities.P1440.value
+                1080 -> com.lagradost.cloudstream3.utils.Qualities.P1080.value
+                720 -> com.lagradost.cloudstream3.utils.Qualities.P720.value
+                480 -> com.lagradost.cloudstream3.utils.Qualities.P480.value
+                360 -> com.lagradost.cloudstream3.utils.Qualities.P360.value
+                0 -> com.lagradost.cloudstream3.utils.Qualities.Unknown.value
+                else -> height ?: com.lagradost.cloudstream3.utils.Qualities.Unknown.value
+            }
+        }
 
         internal data class RowDef(
             val id: String,
@@ -363,14 +391,18 @@ class NuvioMainApi(
 
         internal fun mapStreamRow(s: JSONObject, providerName: String): MappedStream? {
             val nested = s.optJSONObject("url")
+            val client = s.optJSONObject("clientResolve")
             var url = if (nested != null) nested.optString("url") else s.optString("url")
+            if (url.isBlank()) url = client?.optString("url").orEmpty()
             var headers = (if (nested != null) nested.optJSONObject("headers") else null)
                 ?: s.optJSONObject("headers")
-            val ytId = s.optString("ytId").ifBlank { null }
-            val external = s.optString("externalUrl")
-            if (url.isBlank() && external.isBlank() && ytId == null) return null
-            if (isGarbageUrl(url) || isGarbageUrl(external)) return null
-            val label = s.optString("name").ifBlank { s.optString("title") }.ifBlank { providerName }
+            val ytId = s.optString("ytId").ifBlank { client?.optString("ytId")?.ifBlank { null } }
+            val external = s.optString("externalUrl").ifBlank { client?.optString("externalUrl").orEmpty() }
+            val infoHash = s.optString("infoHash").ifBlank { null }
+            if (url.isBlank() && external.isBlank() && ytId == null && infoHash == null) return null
+            val finalUrl = url.ifBlank { external }
+            if (isGarbageUrl(finalUrl) || isGarbageUrl(external)) return null
+            val label = s.optString("name").ifBlank { s.optString("title") }.ifBlank { s.optString("source") }.ifBlank { providerName }
             val quality = s.optString("quality")
             val displayName = if (quality.isNotBlank() && !label.contains(quality, true)) label + " " + quality else label
             val h = LinkedHashMap<String, String>()
@@ -382,7 +414,15 @@ class NuvioMainApi(
                 }
             }
             val hints = s.optJSONObject("behaviorHints")
-            putHeaders(hints?.optJSONObject("proxyHeaders")?.optJSONObject("request"))
+            val proxy = hints?.optJSONObject("proxyHeaders")
+            putHeaders(proxy?.optJSONObject("request"))
+            if (proxy != null) {
+                proxy.keys().forEach { k ->
+                    if (k == "request") return@forEach
+                    val v = proxy.opt(k)
+                    if (v is String && v.isNotBlank()) h.putIfAbsent(k, v.filter { it.code < 128 })
+                }
+            }
             putHeaders(hints?.optJSONObject("headers"))
             putHeaders(headers)
             h.putIfAbsent("User-Agent", UA)
@@ -393,18 +433,19 @@ class NuvioMainApi(
                     val st = subArr.optJSONObject(i) ?: continue
                     val su = st.optString("url")
                     if (su.isBlank()) continue
-                    subs += (st.optString("lang").ifBlank { st.optString("language") }.ifBlank { "Sub" } to su)
+                    subs += (st.optString("lang").ifBlank { st.optString("language") }.ifBlank { st.optString("label") }.ifBlank { "Sub" } to su)
                 }
             }
-            val isTorrent = s.optBoolean("isTorrent", false) ||
-                url.startsWith("magnet:", true) || url.startsWith("torrent:", true)
+            val typeStr = s.optString("type").lowercase()
+            val isTorrent = s.optBoolean("isTorrent", false) || infoHash != null ||
+                finalUrl.startsWith("magnet:", true) || finalUrl.startsWith("torrent:", true)
             val kind = when {
                 isTorrent -> StreamKind.TORRENT
-                s.optBoolean("isM3u8", false) || url.contains(".m3u8", true) -> StreamKind.M3U8
-                s.optBoolean("isMpd", false) || url.contains(".mpd", true) -> StreamKind.DASH
+                s.optBoolean("isM3u8", false) || typeStr == "m3u8" || typeStr == "hls" || finalUrl.contains(".m3u8", true) -> StreamKind.M3U8
+                s.optBoolean("isMpd", false) || typeStr == "mpd" || typeStr == "dash" || finalUrl.contains(".mpd", true) -> StreamKind.DASH
                 else -> StreamKind.VIDEO
             }
-            return MappedStream(url, displayName, kind, h, subs, ytId)
+            return MappedStream(finalUrl, displayName, kind, h, subs, ytId, infoHash, parseStreamQuality(s.opt("quality")))
         }
 
         internal fun isGarbageUrl(url: String): Boolean {

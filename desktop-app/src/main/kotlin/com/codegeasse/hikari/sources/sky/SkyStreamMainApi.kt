@@ -162,6 +162,13 @@ class SkyStreamMainApi(
             (res.opt("data") as? JSONObject) ?: return null
         }
         loadedMeta[token.token] = d
+        runCatching {
+            val ds = d.optJSONArray("streams")
+            if (ds != null && ds.length() > 0) {
+                val mapped = mapStreams(packageName, displayName, ds)
+                if (mapped.isNotEmpty()) instantStreams[token.token] = mapped
+            }
+        }
         val episodes = toEpisodes(packageName, d.optJSONArray("episodes"))
         if (episodes.isNotEmpty()) loadedEpisodes[token.token] = episodes
         val title = d.optString("title").ifBlank { token.token }
@@ -226,8 +233,8 @@ class SkyStreamMainApi(
                     url = s.url,
                     type = type,
                 ) {
-                    referer = ""
-                    quality = Qualities.Unknown.value
+                    referer = s.headers["referer"] ?: s.headers["Referer"] ?: ""
+                    quality = qualityValue(s.qualityH)
                     headers = s.headers
                 }
             )
@@ -253,6 +260,7 @@ class SkyStreamMainApi(
             val kind: StreamKind,
             val headers: Map<String, String>,
             val subtitles: List<Pair<String, String>>,
+            val qualityH: Int? = null,
         )
 
         internal data class SkyItem(
@@ -279,10 +287,11 @@ class SkyStreamMainApi(
         }
 
         internal fun toItem(pkg: String, o: JSONObject): SkyItem? {
-            val token = o.optString("url")
-            val title = o.optString("title").ifBlank { o.optString("name") }
-            if (token.isBlank() || title.isBlank()) return null
-            val rawType = o.optString("type").ifBlank { "movie" }
+            val token = o.optString("url").ifBlank { o.optString("link") }.ifBlank { o.optString("file") }
+            val rawTitle = o.optString("title").ifBlank { o.optString("name") }
+            if (token.isBlank() || rawTitle.isBlank()) return null
+            val title = htmlUnescape(rawTitle)
+            val rawType = o.optString("type").ifBlank { o.optString("contentType") }.ifBlank { "movie" }
             val isTv = when (rawType.lowercase()) {
                 "series", "anime", "tv", "tvseries", "tvshow" -> true
                 else -> false
@@ -291,27 +300,63 @@ class SkyStreamMainApi(
                 url = encodeToken(pkg, token),
                 title = title,
                 isTv = isTv,
-                poster = o.optString("posterUrl").ifBlank { o.optString("poster") }.ifBlank { null },
-                year = o.optInt("year").takeIf { it > 1800 },
+                poster = o.optString("posterUrl").ifBlank { o.optString("poster") }.ifBlank { o.optString("image") }.ifBlank { o.optString("thumbnail") }.ifBlank { o.optString("bannerUrl") }.ifBlank { null },
+                year = o.optInt("year").takeIf { it > 1800 } ?: o.optString("year").take(4).toIntOrNull()?.takeIf { it > 1800 },
             )
         }
+        internal fun htmlUnescape(s: String): String {
+            return s.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
+        }
+        internal fun parseStreamQuality(value: Any?): Int? {
+            val str = when (value) {
+                is Number -> value.toInt().toString()
+                is String -> value
+                else -> return null
+            }.trim().lowercase()
+            if (str.isEmpty() || str == "auto") return 0
+            if (str == "4k" || str == "uhd") return 2160
+            if (str == "2k" || str == "qhd") return 1440
+            val num = Regex("(\\d{3,4})").find(str)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+            if (num == 400) return null
+            return num
+        }
+        internal fun qualityValue(height: Int?): Int {
+            return when (height) {
+                2160 -> com.lagradost.cloudstream3.utils.Qualities.P2160.value
+                1440 -> com.lagradost.cloudstream3.utils.Qualities.P1440.value
+                1080 -> com.lagradost.cloudstream3.utils.Qualities.P1080.value
+                720 -> com.lagradost.cloudstream3.utils.Qualities.P720.value
+                480 -> com.lagradost.cloudstream3.utils.Qualities.P480.value
+                360 -> com.lagradost.cloudstream3.utils.Qualities.P360.value
+                0 -> com.lagradost.cloudstream3.utils.Qualities.Unknown.value
+                else -> height ?: com.lagradost.cloudstream3.utils.Qualities.Unknown.value
+            }
+        }
 
+        internal fun intOrNull(o: JSONObject, vararg keys: String): Int? {
+            for (k in keys) {
+                val v = o.opt(k) ?: continue
+                when (v) {
+                    is Number -> { val n = v.toInt(); if (n > 0) return n }
+                    is String -> { val n = v.take(6).toIntOrNull(); if (n != null && n > 0) return n }
+                }
+            }
+            return null
+        }
         internal fun MainAPI.toEpisodes(pkg: String, arr: JSONArray?): List<Episode> {
             arr ?: return emptyList()
             val out = mutableListOf<Episode>()
             for (i in 0 until minOf(arr.length(), MAX_EPISODES)) {
                 val o = arr.optJSONObject(i) ?: continue
-                val url = o.optString("url")
+                val url = o.optString("url").ifBlank { o.optString("link") }.ifBlank { o.optString("file") }
                 if (url.isBlank()) continue
-                val season = o.optInt("season", 1).takeIf { it > 0 } ?: 1
-                val number = o.optInt("episode").takeIf { it > 0 }
-                    ?: o.optInt("number").takeIf { it > 0 }
-                    ?: (i + 1)
+                val season = intOrNull(o, "season") ?: 1
+                val number = intOrNull(o, "episode", "number") ?: (i + 1)
                 out += newEpisode(encodeToken(pkg, url), {
-                    name = o.optString("name").ifBlank { o.optString("title") }.ifBlank { null }
+                    name = htmlUnescape(o.optString("name").ifBlank { o.optString("title") }).ifBlank { null }
                     this.season = season
                     episode = number
-                    posterUrl = o.optString("image").ifBlank { o.optString("posterUrl") }.ifBlank { null }
+                    posterUrl = o.optString("image").ifBlank { o.optString("posterUrl") }.ifBlank { o.optString("poster") }.ifBlank { o.optString("thumbnail") }.ifBlank { null }
                 }, false)
             }
             return out
@@ -328,14 +373,15 @@ class SkyStreamMainApi(
         }
 
         internal fun toStreamSource(displayName: String, o: JSONObject): MappedStream? {
-            var url = o.optString("url")
+            var url = o.optString("url").ifBlank { o.optString("file") }.ifBlank { o.optString("link") }
             if (url.isBlank()) return null
             val headers = LinkedHashMap<String, String>()
             url = decodeMagic(url, headers)
-            val source = o.optString("source").ifBlank { o.optString("name") }
-            val quality = o.optString("quality")
+            val source = o.optString("source").ifBlank { o.optString("providerName") }.ifBlank { o.optString("name") }
+            val qualityRaw: Any? = if (o.isNull("quality")) null else o.opt("quality")
+            val qualityStr = qualityRaw?.toString().orEmpty()
             val base = source.ifBlank { displayName }
-            val name = if (quality.isNotBlank() && !base.contains(quality, true)) base + " " + quality else base
+            val name = if (qualityStr.isNotBlank() && !base.contains(qualityStr, true)) base + " " + qualityStr else base
             val providerHeaders = o.optJSONObject("headers")
             providerHeaders?.keys()?.forEach { k ->
                 val v = providerHeaders.optString(k).filter { it.code < 128 }
@@ -352,15 +398,16 @@ class SkyStreamMainApi(
                     subs += (st.optString("lang").ifBlank { st.optString("language") }.ifBlank { st.optString("label") }.ifBlank { "Sub" } to su)
                 }
             }
+            val typeStr = o.optString("type").lowercase()
             val isTorrent = url.startsWith("magnet:", true) || url.startsWith("torrent:", true)
             val kind = when {
                 isTorrent -> StreamKind.TORRENT
-                url.startsWith("data:application/vnd.apple.mpegurl") || url.contains(".m3u8", true) -> StreamKind.M3U8
-                url.contains(".mpd", true) -> StreamKind.DASH
+                typeStr == "m3u8" || typeStr == "hls" || url.startsWith("data:application/vnd.apple.mpegurl") || url.contains(".m3u8", true) -> StreamKind.M3U8
+                typeStr == "mpd" || typeStr == "dash" || url.contains(".mpd", true) -> StreamKind.DASH
                 else -> StreamKind.VIDEO
             }
             val finalUrl = if (isTorrent || url.startsWith("data:")) url else normalizeDriveUrl(url)
-            return MappedStream(finalUrl, name, kind, headers, subs)
+            return MappedStream(finalUrl, name, kind, headers, subs, parseStreamQuality(qualityRaw))
         }
 
         internal fun decodeMagic(raw: String, headers: MutableMap<String, String>): String {
