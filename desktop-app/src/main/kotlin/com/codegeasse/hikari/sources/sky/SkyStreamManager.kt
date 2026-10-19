@@ -17,6 +17,7 @@ import java.util.zip.ZipInputStream
 object SkyStreamManager {
 
     private const val TAG = "SkyStreamManager"
+    private const val FETCH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 HikariDesktop/1.0"
     const val MAX_BYTES = 5 * 1024 * 1024
 
     val DEFAULT_REPOS = listOf(
@@ -114,10 +115,13 @@ object SkyStreamManager {
 
     internal fun fetchBytes(url: String, cap: Int = MAX_BYTES): ByteArray? {
         return runCatching {
-            URL(url).openConnection().apply {
-                connectTimeout = 20_000
-                readTimeout = 45_000
-            }.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
+            val c = URL(url).openConnection()
+            c.connectTimeout = 20_000
+            c.readTimeout = 45_000
+            c.setRequestProperty("User-Agent", FETCH_UA)
+            c.setRequestProperty("Accept", "*/*")
+            (c as? java.net.HttpURLConnection)?.instanceFollowRedirects = true
+            c.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
         }.getOrNull()
     }
 
@@ -218,6 +222,11 @@ object SkyStreamManager {
         null
     }
 
+    private fun prettyFallback(repoUrl: String): String {
+        val last = repoUrl.substringBefore('?').trimEnd('/').substringAfterLast('/').substringAfterLast('\\').removeSuffix(".json").replace('-', ' ').replace('_', ' ').trim()
+        if (last.isNotBlank() && !last.equals("main", true) && last.length > 2) return last.split(' ').map { it.replaceFirstChar { c -> c.uppercase() } }.joinToString(" ").take(48)
+        return runCatching { java.net.URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+    }
     internal class Parts(val js: ByteArray?, val manifest: JSONObject?)
 
     internal fun unzip(bytes: ByteArray): Parts? {
@@ -278,7 +287,7 @@ object SkyStreamManager {
     }
 
     suspend fun fetchRepoName(repoUrl: String): String = withContext(Dispatchers.IO) {
-        val fallback = runCatching { URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+        val fallback = prettyFallback(repoUrl)
         val raw = fetchBytes(repoUrl, 512 * 1024) ?: return@withContext fallback
         val text = runCatching { raw.toString(Charsets.UTF_8) }.getOrNull() ?: return@withContext fallback
         repoNameOf(text, fallback)

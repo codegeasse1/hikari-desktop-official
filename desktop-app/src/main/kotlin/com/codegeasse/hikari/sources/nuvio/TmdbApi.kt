@@ -25,10 +25,13 @@ object TmdbApi {
                 k + "=" + URLEncoder.encode(v, "UTF-8")
             })
             val text = runCatching {
-                URL(API_BASE + path + "?" + qs).openConnection().apply {
-                    connectTimeout = 15_000
-                    readTimeout = 30_000
-                }.getInputStream().use { it.readBytes().take(MAX_BYTES).toByteArray().toString(Charsets.UTF_8) }
+                val c = URL(API_BASE + path + "?" + qs).openConnection()
+                c.connectTimeout = 15_000
+                c.readTimeout = 30_000
+                c.setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 HikariDesktop/1.0")
+                c.setRequestProperty("Accept", "application/json")
+                (c as? java.net.HttpURLConnection)?.instanceFollowRedirects = true
+                c.getInputStream().use { it.readBytes().take(MAX_BYTES).toByteArray().toString(Charsets.UTF_8) }
             }.getOrNull() ?: continue
             val obj = runCatching { JSONObject(text) }.getOrNull() ?: continue
             if (obj.has("success") && !obj.optBoolean("success", true)) continue

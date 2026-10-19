@@ -14,6 +14,7 @@ import java.net.URL
 object NuvioManager {
 
     private const val TAG = "NuvioManager"
+    private const val FETCH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 HikariDesktop/1.0"
     const val MAX_BYTES = 5 * 1024 * 1024
 
     val DEFAULT_REPOS = listOf(
@@ -78,13 +79,13 @@ object NuvioManager {
 
     fun manifestEntries(manifestText: String, baseUrl: String): List<ScraperEntry> {
         val root = runCatching { JSONObject(manifestText) }.getOrNull() ?: return emptyList()
-        val arr = runCatching { root.getJSONArray("scrapers") }.getOrNull() ?: return emptyList()
+        val arr = runCatching { root.getJSONArray("scrapers") }.getOrNull() ?: runCatching { root.getJSONArray("providers") }.getOrNull() ?: runCatching { root.getJSONArray("entries") }.getOrNull() ?: runCatching { root.getJSONArray("plugins") }.getOrNull() ?: runCatching { root.getJSONArray("extensions") }.getOrNull() ?: return emptyList()
         val out = mutableListOf<ScraperEntry>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val name = o.optString("name").ifBlank { continue }
-            val filename = o.optString("filename").ifBlank { continue }
-            val versionStr = o.optString("version")
+            val filename = o.optString("filename").ifBlank { o.optString("file") }.ifBlank { o.optString("path") }.ifBlank { o.optString("url").substringAfterLast("/") }.ifBlank { continue }
+            val versionStr = o.optString("version").ifBlank { o.optInt("versionCode").takeIf { it > 0 }?.toString() ?: "" }
             val version = versionStr.takeWhile { it.isDigit() }.toIntOrNull() ?: 1
             val url = if (filename.startsWith("http://") || filename.startsWith("https://")) filename else "$baseUrl/$filename"
             val icon = o.optString("logo").ifBlank { o.optString("iconUrl") }.ifBlank { o.optString("icon") }.ifBlank { null }
@@ -97,10 +98,13 @@ object NuvioManager {
 
     internal fun fetchBytes(url: String, cap: Int = MAX_BYTES): ByteArray? {
         return runCatching {
-            URL(url).openConnection().apply {
-                connectTimeout = 20_000
-                readTimeout = 45_000
-            }.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
+            val c = URL(url).openConnection()
+            c.connectTimeout = 20_000
+            c.readTimeout = 45_000
+            c.setRequestProperty("User-Agent", FETCH_UA)
+            c.setRequestProperty("Accept", "*/*")
+            (c as? java.net.HttpURLConnection)?.instanceFollowRedirects = true
+            c.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
         }.getOrNull()
     }
 
@@ -178,6 +182,11 @@ object NuvioManager {
         val contentMustContain: String? = null,
     )
 
+    private fun prettyFallback(repoUrl: String): String {
+        val last = repoUrl.substringBefore('?').trimEnd('/').substringAfterLast('/').substringAfterLast('\\').removeSuffix(".json").replace('-', ' ').replace('_', ' ').trim()
+        if (last.isNotBlank() && !last.equals("main", true) && last.length > 2) return last.split(' ').map { it.replaceFirstChar { c -> c.uppercase() } }.joinToString(" ").take(48)
+        return runCatching { java.net.URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+    }
     private val PROVIDER_PATCHES = listOf(
         ProviderPatch("vornix.js", "nuvio/patches/vornix.js"),
         ProviderPatch("streamflix.js", "nuvio/patches/streamflix.js"),
@@ -216,7 +225,7 @@ object NuvioManager {
     }
 
     suspend fun fetchRepoName(repoUrl: String): String = withContext(Dispatchers.IO) {
-        val fallback = runCatching { URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+        val fallback = prettyFallback(repoUrl)
         val raw = fetchBytes(repoUrl, 512 * 1024) ?: return@withContext fallback
         val text = runCatching { raw.toString(Charsets.UTF_8) }.getOrNull() ?: return@withContext fallback
         repoNameOf(text, fallback)

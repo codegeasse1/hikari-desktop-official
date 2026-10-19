@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap
 object AniyomiManager {
 
     private const val TAG = "AniyomiManager"
+    private const val FETCH_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 HikariDesktop/1.0"
     const val MAX_BYTES = 96 * 1024 * 1024
 
     private const val EXTENSION_FEATURE = "tachiyomi.animeextension"
@@ -210,10 +211,13 @@ object AniyomiManager {
 
     internal fun fetchBytes(url: String, cap: Int = MAX_BYTES): ByteArray? {
         return runCatching {
-            URL(url).openConnection().apply {
-                connectTimeout = 20_000
-                readTimeout = 45_000
-            }.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
+            val c = URL(url).openConnection()
+            c.connectTimeout = 20_000
+            c.readTimeout = 45_000
+            c.setRequestProperty("User-Agent", FETCH_UA)
+            c.setRequestProperty("Accept", "*/*")
+            (c as? java.net.HttpURLConnection)?.instanceFollowRedirects = true
+            c.getInputStream().use { it.readBytes().take(cap + 1).toByteArray().takeIf { b -> b.size <= cap } }
         }.getOrNull()
     }
 
@@ -573,8 +577,16 @@ object AniyomiManager {
         repoEntries(text, repoUrl.substringBeforeLast('/'))
     }
 
+    private fun prettyFallback(repoUrl: String): String {
+        val last = repoUrl.substringBefore('?').trimEnd('/').substringAfterLast('/').removeSuffix(".json").replace('-', ' ').replace('_', ' ').trim()
+        if (last.isNotBlank() && !last.equals("main", true) && last.length > 2) return last.split(' ').map { it.replaceFirstChar { c -> c.uppercase() } }.joinToString(" ").take(48)
+        return runCatching { URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+    }
     suspend fun fetchRepoName(repoUrl: String): String = withContext(Dispatchers.IO) {
-        runCatching { URL(repoUrl).host }.getOrNull()?.takeIf { it.isNotBlank() } ?: repoUrl
+        val fallback = prettyFallback(repoUrl)
+        val raw = fetchBytes(repoUrl, 512 * 1024) ?: return@withContext fallback
+        val text = runCatching { raw.toString(Charsets.UTF_8) }.getOrNull() ?: return@withContext fallback
+        runCatching { org.json.JSONObject(text).optString("name") }.getOrNull()?.takeIf { it.isNotBlank() } ?: fallback
     }
 
 }
