@@ -50,4 +50,16 @@ class HikiMainApiTest {
         assertTrue(ok)
         assertEquals(1, links)
     }
+
+    @Test
+    fun parseMediaKeepsFullHttpsId() {
+        val api = HikiMainApi(FakeHiki())
+        val ref = "hiki://fake/series/https://anime4i.com/renegade-immortal-xian-ni-episode-164-english-subtitles"
+        val media = api.parseMedia(ref)
+        assertNotNull(media)
+        assertEquals("https://anime4i.com/renegade-immortal-xian-ni-episode-164-english-subtitles", media.id)
+        val (m2, ep) = api.parseEpisodeData(ref + "/ep/e9")
+        assertEquals(media.id, m2.id)
+        assertEquals("e9", ep?.id)
+    }
 }
