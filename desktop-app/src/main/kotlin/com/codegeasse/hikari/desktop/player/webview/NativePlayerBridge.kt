@@ -4,6 +4,10 @@ import com.codegeasse.hikari.common.logging.AppLogger
 import java.util.concurrent.atomic.AtomicBoolean
 
 object NativePlayerBridge {
+    private typealias Compat = com.lagradost.cloudstream3.desktop.player.webview.NativePlayerBridge
+    private inline fun <T> safe(default: T, block: () -> T): T {
+        return try { block() } catch (_: UnsatisfiedLinkError) { default } catch (_: NoSuchMethodError) { default } catch (_: Throwable) { default }
+    }
     private val preloadStarted = AtomicBoolean(false)
 
     init {
@@ -33,68 +37,68 @@ object NativePlayerBridge {
      * @param hostHwnd The HWND of the AWT Canvas.
      * @return The HWND of the new child window, or 0 if failed.
      */
-    external fun initWebView(hostHwnd: Long, width: Int, height: Int): Long
+    fun initWebView(hostHwnd: Long, width: Int, height: Int): Long = safe(0L) { Compat.initWebView(hostHwnd, width, height) }
 
     /**
      * Resizes the native child window.
      */
-    external fun resizeWebView(width: Int, height: Int)
+    fun resizeWebView(width: Int, height: Int) = safe(Unit) { Compat.resizeWebView(width, height) }
 
     /**
      * Enables or disables true borderless fullscreen on the native window.
      * Uses per-window state tracking (thread-safe).
      */
     @JvmStatic
-    external fun setFullscreen(hwnd: Long, fullscreen: Boolean, x: Int, y: Int, width: Int, height: Int)
+    fun setFullscreen(hwnd: Long, fullscreen: Boolean, x: Int, y: Int, width: Int, height: Int) = safe(Unit) { Compat.setFullscreen(hwnd, fullscreen, x, y, width, height) }
 
     /**
      * Installs/removes the PiP-only top-level window subclass that blocks
      * WM_DPICHANGED to prevent AWT from resizing the PiP window on monitor change.
      */
     @JvmStatic
-    external fun setPipSubclass(hwnd: Long, enable: Boolean)
+    fun setPipSubclass(hwnd: Long, enable: Boolean) = safe(Unit) { Compat.setPipSubclass(hwnd, enable) }
 
     /**
      * Applies DWM window chrome: dark mode title bar and optional caption/border/text colours.
      * No-op on Windows versions that don't support these DWM attributes.
      */
     @JvmStatic
-    external fun applyWindowChrome(hwnd: Long, darkMode: Boolean, captionColorRgb: Int, borderColorRgb: Int, textColorRgb: Int)
+    fun applyWindowChrome(hwnd: Long, darkMode: Boolean, captionColorRgb: Int, borderColorRgb: Int, textColorRgb: Int) = safe(Unit) { Compat.applyWindowChrome(hwnd, darkMode, captionColorRgb, borderColorRgb, textColorRgb) }
 
     /**
      * Destroys the native child window.
      */
-    external fun destroyWebView()
+    fun destroyWebView() = safe(Unit) { Compat.destroyWebView() }
 
     /**
      * Forces OS focus onto the WebView container so keyboard events route properly.
      */
-    external fun focusWebView()
+    fun focusWebView() = safe(Unit) { Compat.focusWebView() }
 
     /**
      * Sends a JSON state string to the WebView.
      */
-    external fun executeScript(script: String)
+    fun executeScript(script: String) = safe(Unit) { Compat.executeScript(script) }
 
     /**
      * Posts a JSON message directly to the WebView2 control using postWebMessageAsJson.
      */
-    external fun postMessage(json: String)
+    fun postMessage(json: String) = safe(Unit) { Compat.postMessage(json) }
 
     /**
      * Posts a JSON message directly to the WebView2 control using postWebMessageAsJson.
      */
-    external fun notifyThemeChange(isDarkMode: Boolean)
+    fun notifyThemeChange(isDarkMode: Boolean) = safe(Unit) { Compat.notifyThemeChange(isDarkMode) }
 
     /**
      * Initializes an invisible WebView2 instance in the background to warm up Chromium.
      */
-    external fun warmupWebView2(controlsUrl: String? = null)
+    fun warmupWebView2(controlsUrl: String? = null) = safe(Unit) { Compat.warmupWebView2(controlsUrl) }
 
     /**
      * Shuts down the background warmup thread.
      */
-    external fun shutdownWebView2Warmup()
+    fun shutdownWebView2Warmup() = safe(Unit) { Compat.shutdownWebView2Warmup() }
 
     fun loadPlayerUiResource(path: String): String {
         val devFile = java.io.File("desktop-app/src/main/resources$path")
@@ -166,27 +170,27 @@ object NativePlayerBridge {
     /**
      * Navigates the WebView to a specific URL (like file:///...)
      */
-    external fun loadUrl(url: String)
+    fun loadUrl(url: String) = safe(Unit) { Compat.loadUrl(url) }
 
     /**
      * Starts a direct C++ sync timer for mpv properties (bypassing Kotlin loop overhead).
      */
-    external fun startMpvSync(mpvHandle: Long)
+    fun startMpvSync(mpvHandle: Long) = safe(Unit) { Compat.startMpvSync(mpvHandle) }
 
     /**
      * Stops the direct C++ sync timer before destroying the mpv handle to prevent dangling pointer crashes.
      */
-    external fun stopMpvSync()
+    fun stopMpvSync() = safe(Unit) { Compat.stopMpvSync() }
 
     /**
      * Opens the WebView devtools.
      */
-    external fun openDevTools()
+    fun openDevTools() = safe(Unit) { Compat.openDevTools() }
 
     /**
      * Registers a listener to receive events from the WebView JS bridge.
      */
-    external fun setEventListener(listener: NativePlayerEventListener?)
+    fun setEventListener(listener: NativePlayerEventListener?) = safe(Unit) { Compat.setEventListener(listener) }
 
     interface NativePlayerEventListener {
         fun onPlayerEvent(type: String, value: String)
