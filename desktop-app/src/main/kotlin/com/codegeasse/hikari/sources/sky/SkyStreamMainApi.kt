@@ -275,8 +275,9 @@ class SkyStreamMainApi(
             "sky://" + pkg + "/" + URLEncoder.encode(token, "UTF-8").replace("+", "%20")
 
         internal fun decodeToken(url: String): Token? {
-            if (!url.startsWith("sky://")) return null
-            val rest = url.removePrefix("sky://")
+            val norm = if (url.contains("sky://")) url.substring(url.lastIndexOf("sky://")) else url
+            if (!norm.startsWith("sky://")) return null
+            val rest = norm.removePrefix("sky://")
             val slash = rest.indexOf('/')
             if (slash <= 0) return null
             val pkg = rest.substring(0, slash)
