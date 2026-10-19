@@ -62,6 +62,17 @@ class NuvioMainApiTest {
         assertEquals("https://drive.usercontent.google.com/download?id=ABC&export=download&confirm=t", normalizeDriveUrl("https://drive.google.com/file/d/ABC/view"))
     }
 
+    @Test
+    fun prefixedRefsHeal() {
+        val ref = parseMediaRef("https://cdn.test/4khdhub.js/nuvio://vixsrc/movie/99")
+        assertNotNull(ref)
+        assertEquals("99", ref.tmdbId)
+        val ep = parseEpisodeData("https://cdn.test/4khdhub.js/nuvio://vixsrc/tv/12345/s/2/e/5")
+        assertNotNull(ep)
+        assertEquals(2, ep.season)
+        assertEquals(5, ep.episode)
+    }
+
     private fun parseMediaRef(ref: String) = NuvioMainApi.parseMediaRef(ref)
     private fun parseEpisodeData(data: String) = NuvioMainApi.parseEpisodeData(data)
     private fun rowsFor(name: String, all: List<String>) = NuvioMainApi.rowsFor(name, all)
