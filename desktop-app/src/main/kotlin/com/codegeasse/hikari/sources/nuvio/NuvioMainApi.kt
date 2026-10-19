@@ -370,7 +370,8 @@ class NuvioMainApi(
         }
 
         internal fun parseMediaRef(ref: String): MediaRef? {
-            val parts = ref.removePrefix("nuvio://").split("/")
+            val norm = if (ref.contains("nuvio://")) ref.substring(ref.lastIndexOf("nuvio://")) else ref
+            val parts = norm.removePrefix("nuvio://").split("/")
             if (parts.size != 3) return null
             val type = parts[1].lowercase()
             if (type != "movie" && type != "tv") return null
@@ -379,10 +380,11 @@ class NuvioMainApi(
         }
 
         internal fun parseEpisodeData(data: String): EpisodeData? {
-            val mediaPart = data.substringBefore("/s/")
+            val norm = if (data.contains("nuvio://")) data.substring(data.lastIndexOf("nuvio://")) else data
+            val mediaPart = norm.substringBefore("/s/")
             val ref = parseMediaRef(mediaPart) ?: return null
-            if (!data.contains("/s/")) return EpisodeData(ref.stem, ref.isTv, ref.tmdbId, null, null)
-            val rest = data.substringAfter("/s/").split("/")
+            if (!norm.contains("/s/")) return EpisodeData(ref.stem, ref.isTv, ref.tmdbId, null, null)
+            val rest = norm.substringAfter("/s/").split("/")
             if (rest.size != 3 || rest[1] != "e") return null
             val season = rest[0].toIntOrNull() ?: return null
             val episode = rest[2].toIntOrNull() ?: return null
