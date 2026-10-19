@@ -108,17 +108,17 @@ internal object DetailsWatchCoordinator {
         } else if (sortedEpisodes.isNotEmpty()) {
             sortedEpisodes.firstOrNull()
         } else if (resp is TvSeriesLoadResponse || resp is AnimeLoadResponse) {
-            provider.newEpisode(resp.url, fix = false) {
+            provider.newEpisode(resp.url, {
                 this.name = resp.name
                 this.posterUrl = resp.posterUrl
                 this.description = resp.plot
-            }
+            }, false)
         } else if (resp is MovieLoadResponse) {
-            provider.newEpisode(resp.dataUrl, fix = false) {
+            provider.newEpisode(resp.dataUrl, {
                 this.name = resp.name
                 this.posterUrl = resp.backgroundPosterUrl ?: resp.posterUrl
                 this.description = resp.plot
-            }
+            }, false)
         } else {
             null
         }
