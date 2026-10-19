@@ -695,13 +695,13 @@ class EmbeddedPlayerViewModel(
                 it.name == apiName && it.mainUrl.isNotBlank() && showUrl.startsWith(it.mainUrl)
             } ?: com.lagradost.cloudstream3.APIHolder.getApiFromNameNull(apiName)
             if (provider != null) {
-                val targetEp = provider.newEpisode(hydratedData.history.episodeId!!, fix = false) {
+                val targetEp = provider.newEpisode(hydratedData.history.episodeId!!, {
                     this.name = hydratedData.history.episodeName ?: hydratedData.history.showName
                     this.posterUrl = hydratedData.history.episodeThumbnailUrl ?: hydratedData.history.posterUrl
                     this.description = hydratedData.history.episodeDescription
                     this.season = hydratedData.history.season
                     this.episode = hydratedData.history.episode
-                }
+                }, false)
                 updateState {
                     copy(
                         phase = PlayerPhase.Scraping,
