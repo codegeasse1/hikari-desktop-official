@@ -108,13 +108,13 @@ internal object DetailsWatchCoordinator {
         } else if (sortedEpisodes.isNotEmpty()) {
             sortedEpisodes.firstOrNull()
         } else if (resp is TvSeriesLoadResponse || resp is AnimeLoadResponse) {
-            provider.newEpisode(resp.url) {
+            provider.newEpisode(resp.url, fix = false) {
                 this.name = resp.name
                 this.posterUrl = resp.posterUrl
                 this.description = resp.plot
             }
         } else if (resp is MovieLoadResponse) {
-            provider.newEpisode(resp.dataUrl) {
+            provider.newEpisode(resp.dataUrl, fix = false) {
                 this.name = resp.name
                 this.posterUrl = resp.backgroundPosterUrl ?: resp.posterUrl
                 this.description = resp.plot
