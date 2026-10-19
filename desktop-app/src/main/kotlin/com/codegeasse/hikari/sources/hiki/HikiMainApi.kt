@@ -54,7 +54,8 @@ class HikiMainApi(
         mediaRef(media) + "/ep/" + episode.id
 
     fun parseMedia(ref: String): HikariMedia? {
-        val parts = ref.removePrefix("hiki://").split("/")
+        val norm = if (ref.contains("hiki://")) ref.substring(ref.lastIndexOf("hiki://")) else ref
+        val parts = norm.removePrefix("hiki://").split("/")
         if (parts.size < 3) return null
         if (parts[0] != provider.id) return null
         val type = when (parts[1].lowercase()) {
@@ -62,14 +63,15 @@ class HikiMainApi(
             "series" -> HikariMediaType.SERIES
             else -> HikariMediaType.UNKNOWN
         }
-        val id = parts.subList(2, 3).firstOrNull()?.takeIf { it.isNotBlank() } ?: return null
+        val id = parts.subList(2, parts.size).joinToString("/").takeIf { it.isNotBlank() } ?: return null
         return HikariMedia(id = id, title = id, type = type)
     }
 
     fun parseEpisodeData(data: String): Pair<HikariMedia, HikariEpisode?> {
-        val mediaPart = data.substringBefore("/ep/")
-        val media = parseMedia(mediaPart) ?: HikariMedia(id = data, title = data, type = HikariMediaType.UNKNOWN)
-        val epId = if (data.contains("/ep/")) data.substringAfter("/ep/").substringBefore("/").takeIf { it.isNotBlank() } else null
+        val norm = if (data.contains("hiki://")) data.substring(data.lastIndexOf("hiki://")) else data
+        val mediaPart = norm.substringBefore("/ep/")
+        val media = parseMedia(mediaPart) ?: HikariMedia(id = norm, title = norm, type = HikariMediaType.UNKNOWN)
+        val epId = if (norm.contains("/ep/")) norm.substringAfter("/ep/").takeIf { it.isNotBlank() } else null
         val ep = epId?.let { HikariEpisode(number = 1, id = it) }
         return media to ep
     }
