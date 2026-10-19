@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.TvType
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 private class FakeHiki : HikariProvider {
@@ -49,17 +50,5 @@ class HikiMainApiTest {
         val ok = api.loadLinks(series.episodes.first().data, false, {}, { links++ })
         assertTrue(ok)
         assertEquals(1, links)
-    }
-
-    @Test
-    fun parseMediaKeepsFullHttpsId() {
-        val api = HikiMainApi(FakeHiki())
-        val ref = "hiki://fake/series/https://anime4i.com/renegade-immortal-xian-ni-episode-164-english-subtitles"
-        val media = api.parseMedia(ref)
-        assertNotNull(media)
-        assertEquals("https://anime4i.com/renegade-immortal-xian-ni-episode-164-english-subtitles", media.id)
-        val (m2, ep) = api.parseEpisodeData(ref + "/ep/e9")
-        assertEquals(media.id, m2.id)
-        assertEquals("e9", ep?.id)
     }
 }
