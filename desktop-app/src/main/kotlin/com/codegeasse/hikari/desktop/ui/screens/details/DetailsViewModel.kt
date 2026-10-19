@@ -181,6 +181,9 @@ class DetailsViewModel(
             GetEnrichedDetailsUseCase(provider, url, preloadedName, preloadedPoster, preloadedBg).collect { update ->
                 when (update) {
                     is EnrichmentUpdate.RawData -> {
+                        if (!preloadedName.isNullOrBlank() && (update.response.name.isBlank() || update.response.name.contains("://") || update.response.name == "https:")) {
+                            runCatching { update.response.name = preloadedName }.onFailure { }
+                        }
                         val rawTmdbId = update.response.syncData["tmdb"]?.toIntOrNull()
                         val isSeries = update.response is TvSeriesLoadResponse || update.response is AnimeLoadResponse
                         val availableSeasons = when (val resp = update.response) {

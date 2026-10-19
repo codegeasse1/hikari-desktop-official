@@ -97,7 +97,21 @@ class NuvioMainApi(
     override suspend fun load(url: String): LoadResponse? {
         val ref = parseMediaRef(url) ?: return null
         val type = if (ref.isTv) "tv" else "movie"
-        val d = TmdbApi.apiGet("/" + type + "/" + ref.tmdbId, emptyMap()) ?: return null
+        val d = TmdbApi.apiGet("/" + type + "/" + ref.tmdbId, emptyMap())
+        if (d == null) {
+            return if (!ref.isTv) {
+                newMovieLoadResponse("TMDB " + ref.tmdbId, url, TvType.Movie, url) {
+                    posterUrl = null
+                }
+            } else {
+                val fb = seriesEpisodes(ref.tmdbId).ifEmpty {
+                    listOf(newEpisode("nuvio://" + stem + "/tv/" + ref.tmdbId + "/s/1/e/1", { name = "Episode 1"; season = 1; episode = 1 }, false))
+                }
+                newTvSeriesLoadResponse("TMDB " + ref.tmdbId, url, TvType.TvSeries, fb) {
+                    posterUrl = null
+                }
+            }
+        }
         val title = d.optString("title").ifBlank { d.optString("name") }.ifBlank { ref.tmdbId }
         val year = listOf("release_date", "first_air_date")
             .firstNotNullOfOrNull { k -> d.optString(k).takeIf { it.isNotBlank() }?.take(4)?.toIntOrNull() }
@@ -116,7 +130,9 @@ class NuvioMainApi(
                 backgroundPosterUrl = backdrop
             }
         }
-        val episodes = seriesEpisodes(ref.tmdbId)
+        val episodes = seriesEpisodes(ref.tmdbId).ifEmpty {
+            listOf(newEpisode("nuvio://" + stem + "/tv/" + ref.tmdbId + "/s/1/e/1", { name = "Episode 1"; season = 1; episode = 1 }, false))
+        }
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             posterUrl = poster
             this.year = year

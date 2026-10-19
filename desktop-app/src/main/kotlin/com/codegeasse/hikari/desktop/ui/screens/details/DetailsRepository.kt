@@ -68,6 +68,11 @@ object EnrichedDetailsCache {
 }
 
 object DetailsRepository {
+    internal fun readableSlug(url: String): String {
+        val seg = url.substringBefore('?').trimEnd('/').substringAfterLast('/').substringAfterLast('\\').trim()
+        if (seg.isBlank() || seg.startsWith("http")) return url.take(48)
+        return seg.replace('-', ' ').replace('_', ' ').split(' ').map { it.replaceFirstChar { c -> c.uppercase() } }.joinToString(" ").take(64).ifBlank { url.take(48) }
+    }
     private val inflightMutexes = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.sync.Mutex>()
 
     suspend fun fetchRaw(provider: com.lagradost.cloudstream3.MainAPI, url: String, fallbackName: String? = null): LoadResponse? {
@@ -172,6 +177,13 @@ object DetailsRepository {
                 if (result.isSuccess) {
                     val loaded = result.getOrNull()
                     if (loaded != null) {
+                        if (loaded.name.isBlank() || loaded.name.contains("://") || loaded.name == "https:") {
+                            if (!fallbackName.isNullOrBlank()) {
+                                runCatching { loaded.name = fallbackName }.onFailure { }
+                            } else {
+                                runCatching { loaded.name = readableSlug(loaded.url.ifBlank { targetUrl }) }.onFailure { }
+                            }
+                        }
                         com.codegeasse.hikari.common.logging.AppLogger.i("Plugin:${targetProvider.name}", "Loaded details: title='${loaded.name}', type=${loaded.type}")
                         loaded.posterUrl = targetProvider.fixUrlNull(loaded.posterUrl)
                         loaded.backgroundPosterUrl = targetProvider.fixUrlNull(loaded.backgroundPosterUrl)

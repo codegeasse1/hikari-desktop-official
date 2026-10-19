@@ -112,18 +112,28 @@ class AniyomiMainApi(
             ?: runCatching { src.getAnimeDetails(stub) }.getOrNull()
             ?: stub
         if (detailed !== stub) animeCache[token.animeUrl] = detailed
-        val title = runCatching { detailed.title }.getOrNull()?.takeIf { it.isNotBlank() } ?: token.animeUrl
+        val rawTitle = runCatching { detailed.title }.getOrNull()?.takeIf { it.isNotBlank() }
+        val title = rawTitle ?: readableTitle(token.animeUrl)
         val poster = runCatching { detailed.thumbnail_url }.getOrNull()?.takeIf { it.isNotBlank() }
         val plot = runCatching { detailed.description }.getOrNull()?.takeIf { it.isNotBlank() }
         val genres = runCatching { detailed.getGenres() }.getOrNull().orEmpty()
         val backdrop = runCatching { detailed.background_url }.getOrNull()?.takeIf { it.isNotBlank() }
         val episodes = episodesFor(src, detailed, token.animeUrl)
-        newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+        val safeEpisodes = if (episodes.isEmpty()) {
+            listOf(newEpisode(encodeEpisode(pkg, sourceIndex, token.animeUrl, token.animeUrl), { name = title; season = 1; episode = 1 }, false))
+        } else episodes
+        newTvSeriesLoadResponse(title, url, TvType.TvSeries, safeEpisodes) {
             posterUrl = poster
             this.plot = plot
             tags = genres
             backgroundPosterUrl = backdrop
         }
+    }
+
+    internal fun readableTitle(animeUrl: String): String {
+        val slug = animeUrl.substringBefore('?').trimEnd('/').substringAfterLast('/').takeIf { it.isNotBlank() } ?: return animeUrl.take(48)
+        if (!slug.contains('-') && !slug.contains('_') && slug.startsWith("http")) return animeUrl.take(48)
+        return slug.replace('-', ' ').replace('_', ' ').split(' ').map { it.replaceFirstChar { c -> c.uppercase() } }.joinToString(" ").take(64).ifBlank { animeUrl.take(48) }
     }
 
     private suspend fun episodesFor(src: AnimeSource, anime: SAnime, animeUrl: String): List<Episode> {

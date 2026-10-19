@@ -107,6 +107,12 @@ internal object DetailsWatchCoordinator {
             }
         } else if (sortedEpisodes.isNotEmpty()) {
             sortedEpisodes.firstOrNull()
+        } else if (resp is TvSeriesLoadResponse || resp is AnimeLoadResponse) {
+            provider.newEpisode(resp.url) {
+                this.name = resp.name
+                this.posterUrl = resp.posterUrl
+                this.description = resp.plot
+            }
         } else if (resp is MovieLoadResponse) {
             provider.newEpisode(resp.dataUrl) {
                 this.name = resp.name

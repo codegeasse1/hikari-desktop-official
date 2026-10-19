@@ -124,6 +124,12 @@ fun DetailsEpisodeSection(
                         fontSize = 13.5.sp,
                         lineHeight = 18.sp,
                     )
+                    Button(
+                        onClick = { onPlay(provider.newEpisode(data.url) { name = data.name }) },
+                        modifier = Modifier.padding(top = 12.dp),
+                    ) {
+                        Text("Try playing anyway")
+                    }
                 }
             }
         }
